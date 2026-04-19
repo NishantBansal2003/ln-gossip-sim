@@ -1,7 +1,8 @@
 # ln-gossip-sim
 
 Lightning Network gossip simulator for regtest. Connects to LN nodes over the
-Bolt 8 Noise protocol, exchanges init/ping/pong messages.
+Bolt 8 Noise protocol, exchanges init/ping/pong messages, and talks to bitcoind
+via RPC.
 
 ## Build
 
@@ -11,10 +12,10 @@ cargo build
 
 ## Usage
 
-Start the daemon:
+Start the daemon (requires a running bitcoind on regtest):
 
 ```
-ln-gossip-simd
+ln-gossip-simd [--rpc-url http://127.0.0.1:18443] [--rpc-user user] [--rpc-pass password]
 ```
 
 Use the CLI:
@@ -25,6 +26,9 @@ ln-gossip-sim-cli connect <pubkey_hex> <host:port>
 
 # List connected peers
 ln-gossip-sim-cli peers
+
+# Show node and chain info
+ln-gossip-sim-cli info
 
 # Disconnect a peer
 ln-gossip-sim-cli disconnect <pubkey_hex>

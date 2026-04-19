@@ -29,6 +29,8 @@ enum Command {
     },
     /// List connected peers
     Peers,
+    /// Show chain and node info
+    Info,
     /// Stop the daemon
     Stop,
 }
@@ -40,6 +42,7 @@ fn main() {
         Command::Connect { pubkey, addr } => format!("connect {pubkey} {addr}"),
         Command::Disconnect { pubkey } => format!("disconnect {pubkey}"),
         Command::Peers => "peers".to_string(),
+        Command::Info => "info".to_string(),
         Command::Stop => "stop".to_string(),
     };
 

@@ -1,7 +1,9 @@
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
+use clap::Parser;
 use lightning::ln::peer_handler::PeerManager;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::sign::KeysManager;
+use ln_gossip_sim::bitcoind::BitcoindClient;
 use ln_gossip_sim::log::SimLogger;
 use ln_gossip_sim::{SOCK_PATH, keepalive, keys, log_error, log_info, noise, types};
 use std::net::SocketAddr;
@@ -11,15 +13,31 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{Mutex, watch};
 
+#[derive(Parser)]
+#[command(name = "ln-gossip-simd", about = "LN gossip simulator daemon")]
+struct Args {
+    /// bitcoind RPC URL
+    #[arg(long, default_value = "http://127.0.0.1:18443")]
+    rpc_url: String,
+    /// bitcoind RPC user
+    #[arg(long, default_value = "user")]
+    rpc_user: String,
+    /// bitcoind RPC password
+    #[arg(long, default_value = "password")]
+    rpc_pass: String,
+}
+
 struct Daemon {
+    node_id: PublicKey,
     peer_manager: Arc<types::PeerMgr>,
+    bitcoind: Arc<BitcoindClient>,
     logger: Arc<SimLogger>,
     stop_tx: watch::Sender<bool>,
     keepalive_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Daemon {
-    fn new() -> (Arc<Self>, watch::Receiver<bool>) {
+    fn new(bitcoind: Arc<BitcoindClient>) -> (Arc<Self>, watch::Receiver<bool>) {
         let logger = Arc::new(SimLogger);
         let cur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
@@ -31,11 +49,8 @@ impl Daemon {
         ));
 
         let secp = Secp256k1::new();
-        log_info!(
-            logger,
-            "Node ID: {}",
-            PublicKey::from_secret_key(&secp, &keys_manager.get_node_secret_key())
-        );
+        let node_id = PublicKey::from_secret_key(&secp, &keys_manager.get_node_secret_key());
+        log_info!(logger, "Node ID: {node_id}");
 
         let network_graph = Arc::new(NetworkGraph::new(
             bitcoin::Network::Regtest,
@@ -58,7 +73,9 @@ impl Daemon {
         let (stop_tx, stop_rx) = watch::channel(false);
 
         let daemon = Arc::new(Self {
+            node_id,
             peer_manager,
+            bitcoind,
             logger,
             stop_tx,
             keepalive_handle: Mutex::new(None),
@@ -78,6 +95,7 @@ impl Daemon {
             Some("connect") => self.cmd_connect(&parts).await,
             Some("disconnect") => self.cmd_disconnect(&parts),
             Some("peers") => self.cmd_peers(),
+            Some("info") => self.cmd_info(),
             Some("stop") => {
                 self.shutdown();
                 "Stopping daemon\n".to_string()
@@ -140,6 +158,17 @@ impl Daemon {
         format!("Disconnected {pubkey}\n")
     }
 
+    fn cmd_info(&self) -> String {
+        let blocks = self.bitcoind.block_count();
+        let hash = self.bitcoind.best_block_hash();
+        let balance = self.bitcoind.balance();
+        let peers = self.peer_manager.list_peers().len();
+        format!(
+            "[LN] node={} peers={peers}\n[Bitcoin] chain=regtest blocks={blocks} best={hash} balance={balance}\n",
+            self.node_id
+        )
+    }
+
     fn cmd_peers(&self) -> String {
         let peers = self.peer_manager.list_peers();
         if peers.is_empty() {
@@ -159,7 +188,15 @@ impl Daemon {
 
 #[tokio::main]
 async fn main() {
-    let (daemon, mut stop_rx) = Daemon::new();
+    let args = Args::parse();
+
+    let bitcoind = Arc::new(
+        BitcoindClient::new(&args.rpc_url, &args.rpc_user, &args.rpc_pass)
+            .expect("Failed to connect to bitcoind"),
+    );
+
+    let (daemon, mut stop_rx) = Daemon::new(bitcoind);
+    log_info!(daemon.logger, "Connected to bitcoind at {}", args.rpc_url);
 
     let _ = std::fs::remove_file(SOCK_PATH);
     let listener = UnixListener::bind(SOCK_PATH).expect("Failed to bind unix socket");
