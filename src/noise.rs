@@ -33,19 +33,24 @@ pub async fn connect(
     let handle = tokio::spawn(conn_closed);
     tokio::time::sleep(HANDSHAKE_TIMEOUT).await;
 
-    if peer_manager.list_peers().is_empty() {
-        log_error!(logger, "Noise handshake failed");
-        return None;
-    }
+    let peer = peer_manager
+        .list_peers()
+        .into_iter()
+        .find(|p| p.counterparty_node_id == their_node_id);
 
-    for peer in peer_manager.list_peers() {
-        log_info!(
-            logger,
-            "Peer connected: {} features={:?}",
-            peer.counterparty_node_id,
-            peer.init_features
-        );
+    match peer {
+        Some(p) => {
+            log_info!(
+                logger,
+                "Peer connected: {} features={:?}",
+                p.counterparty_node_id,
+                p.init_features
+            );
+            Some(handle)
+        }
+        None => {
+            log_error!(logger, "Noise handshake failed for {their_node_id}");
+            None
+        }
     }
-
-    Some(handle)
 }

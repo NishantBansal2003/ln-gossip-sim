@@ -6,6 +6,8 @@ use bitcoin::secp256k1::{Secp256k1, rand};
 use corepc_client::client_sync::Auth;
 use corepc_client::client_sync::v30::Client;
 
+use crate::error::Error;
+
 const WALLET_NAME: &str = "ln-gossip-sim";
 
 /// Wrapper around `corepc-client` for bitcoind RPC.
@@ -16,29 +18,33 @@ pub struct BitcoindClient {
 impl BitcoindClient {
     /// Connect to bitcoind, verify regtest, and ensure the
     /// `ln-gossip-sim` wallet exists.
-    pub fn new(url: &str, user: &str, pass: &str) -> Result<Self, String> {
+    pub fn new(url: &str, user: &str, pass: &str) -> Result<Self, Error> {
         let auth = Auth::UserPass(user.to_string(), pass.to_string());
 
         // Use the base URL first to check chain and set up wallet.
         let base =
-            Client::new_with_auth(url, auth.clone()).map_err(|e| format!("RPC auth error: {e}"))?;
+            Client::new_with_auth(url, auth.clone()).map_err(|e| Error::Rpc(e.to_string()))?;
 
         let info = base
             .get_blockchain_info()
-            .map_err(|e| format!("getblockchaininfo failed: {e}"))?;
+            .map_err(|e| Error::Rpc(e.to_string()))?;
         if info.chain != "regtest" {
-            return Err(format!("Expected regtest, got {}", info.chain));
+            return Err(Error::Chain(format!(
+                "expected regtest, got {}",
+                info.chain
+            )));
         }
 
         // Ensure wallet exists: try load, then create as fallback.
         if base.load_wallet(WALLET_NAME).is_err() {
-            let _ = base.create_wallet(WALLET_NAME);
+            base.create_wallet(WALLET_NAME)
+                .map_err(|e| Error::Rpc(format!("create wallet: {e}")))?;
         }
 
         // Connect with wallet-scoped URL.
         let wallet_url = format!("{}/wallet/{}", url.trim_end_matches('/'), WALLET_NAME);
-        let client = Client::new_with_auth(&wallet_url, auth)
-            .map_err(|e| format!("RPC wallet auth error: {e}"))?;
+        let client =
+            Client::new_with_auth(&wallet_url, auth).map_err(|e| Error::Rpc(e.to_string()))?;
 
         Ok(Self { client })
     }
@@ -72,7 +78,7 @@ impl BitcoindClient {
     /// Returns (address, pubkey1, pubkey2) so callers can reference the keys
     /// later (e.g. for channel announcements / UtxoLookup).
     /// Keys are imported with private keys so the wallet fully owns the output.
-    pub fn new_funding_address(&self) -> Result<(Address, String, String), String> {
+    pub fn new_funding_address(&self) -> Result<(Address, String, String), Error> {
         let secp = Secp256k1::new();
         let (sk1, _) = secp.generate_keypair(&mut rand::thread_rng());
         let (sk2, _) = secp.generate_keypair(&mut rand::thread_rng());
@@ -97,8 +103,10 @@ impl BitcoindClient {
                 "getdescriptorinfo",
                 &[serde_json::Value::String(desc.clone())],
             )
-            .map_err(|e| format!("getdescriptorinfo: {e}"))?;
-        let checksum = info["checksum"].as_str().ok_or("missing checksum")?;
+            .map_err(|e| Error::Descriptor(e.to_string()))?;
+        let checksum = info["checksum"]
+            .as_str()
+            .ok_or_else(|| Error::Descriptor("missing checksum".into()))?;
         let desc_full = format!("{desc}#{checksum}");
 
         // Derive the P2WSH address.
@@ -108,12 +116,12 @@ impl BitcoindClient {
                 "deriveaddresses",
                 &[serde_json::Value::String(desc_full.clone())],
             )
-            .map_err(|e| format!("deriveaddresses: {e}"))?;
+            .map_err(|e| Error::Address(e.to_string()))?;
         let addr = addrs[0]
             .as_str()
-            .ok_or("missing address in deriveaddresses")?
+            .ok_or_else(|| Error::Address("missing address in deriveaddresses".into()))?
             .parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
-            .map_err(|e| format!("parse address: {e}"))?
+            .map_err(|e| Error::Address(e.to_string()))?
             .assume_checked();
 
         // Import with private keys -- wallet can track and spend.
@@ -127,21 +135,24 @@ impl BitcoindClient {
                     "active": false
                 }])],
             )
-            .map_err(|e| format!("importdescriptors: {e}"))?;
+            .map_err(|e| Error::Descriptor(e.to_string()))?;
         if let Some(false) = result[0]["success"].as_bool() {
-            return Err(format!("importdescriptors: {}", result[0]["error"]));
+            return Err(Error::Descriptor(format!(
+                "importdescriptors: {}",
+                result[0]["error"]
+            )));
         }
 
         Ok((addr, p1.to_string(), p2.to_string()))
     }
 
-    fn mine_to_funding(&self, blocks: usize) -> Result<String, String> {
+    fn mine_to_funding(&self, blocks: usize) -> Result<String, Error> {
         let (addr, _, _) = self.new_funding_address()?;
 
         let r = self
             .client
             .generate_to_address(blocks, &addr)
-            .map_err(|e| format!("generatetoaddress: {e}"))?;
+            .map_err(|e| Error::Rpc(e.to_string()))?;
 
         Ok(format!("Mined {} block(s) to {addr}\n", r.0.len()))
     }

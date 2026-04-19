@@ -1,6 +1,7 @@
 #[macro_use]
 pub mod log;
 pub mod bitcoind;
+pub mod error;
 pub mod keepalive;
 pub mod keys;
 pub mod noise;

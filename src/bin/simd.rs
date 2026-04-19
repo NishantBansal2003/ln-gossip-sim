@@ -89,14 +89,14 @@ impl Daemon {
         let _ = self.stop_tx.send(true);
     }
 
-    async fn handle_command(&self, line: &str) -> String {
+    async fn handle_command(self: &Arc<Self>, line: &str) -> String {
         let parts: Vec<&str> = line.split_whitespace().collect();
         match parts.first().copied() {
             Some("connect") => self.cmd_connect(&parts).await,
             Some("disconnect") => self.cmd_disconnect(&parts),
             Some("peers") => self.cmd_peers(),
-            Some("info") => self.cmd_info(),
-            Some("mine") => self.cmd_mine(&parts),
+            Some("info") => self.cmd_info().await,
+            Some("mine") => self.cmd_mine(&parts).await,
             Some("stop") => {
                 self.shutdown();
                 "Stopping daemon\n".to_string()
@@ -159,10 +159,13 @@ impl Daemon {
         format!("Disconnected {pubkey}\n")
     }
 
-    fn cmd_info(&self) -> String {
-        let blocks = self.bitcoind.block_count();
-        let hash = self.bitcoind.best_block_hash();
-        let balance = self.bitcoind.balance();
+    async fn cmd_info(&self) -> String {
+        let btc = Arc::clone(&self.bitcoind);
+        let (blocks, hash, balance) = tokio::task::spawn_blocking(move || {
+            (btc.block_count(), btc.best_block_hash(), btc.balance())
+        })
+        .await
+        .unwrap_or((0, "unknown".to_string(), "0 BTC".to_string()));
         let peers = self.peer_manager.list_peers().len();
         format!(
             "[LN] node={} peers={peers}\n[Bitcoin] chain=regtest blocks={blocks} best={hash} balance={balance}\n",
@@ -170,12 +173,15 @@ impl Daemon {
         )
     }
 
-    fn cmd_mine(&self, parts: &[&str]) -> String {
+    async fn cmd_mine(&self, parts: &[&str]) -> String {
         let blocks: usize = match parts.get(1).and_then(|s| s.parse().ok()) {
             Some(n) => n,
             None => return "Usage: mine <blocks>\n".to_string(),
         };
-        self.bitcoind.mine(blocks)
+        let btc = Arc::clone(&self.bitcoind);
+        tokio::task::spawn_blocking(move || btc.mine(blocks))
+            .await
+            .unwrap_or_else(|e| format!("Task failed: {e}\n"))
     }
 
     fn cmd_peers(&self) -> String {
