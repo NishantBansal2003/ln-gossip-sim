@@ -31,6 +31,11 @@ enum Command {
     Peers,
     /// Show chain and node info
     Info,
+    /// Mine blocks to a 2-of-2 P2WSH address
+    Mine {
+        /// Number of blocks to mine
+        blocks: usize,
+    },
     /// Stop the daemon
     Stop,
 }
@@ -43,6 +48,7 @@ fn main() {
         Command::Disconnect { pubkey } => format!("disconnect {pubkey}"),
         Command::Peers => "peers".to_string(),
         Command::Info => "info".to_string(),
+        Command::Mine { blocks } => format!("mine {blocks}"),
         Command::Stop => "stop".to_string(),
     };
 

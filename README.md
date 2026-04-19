@@ -33,6 +33,9 @@ ln-gossip-sim-cli info
 # Disconnect a peer
 ln-gossip-sim-cli disconnect <pubkey_hex>
 
+# Mine blocks to a 2-of-2 P2WSH address (LN-like funding output)
+ln-gossip-sim-cli mine <blocks>
+
 # Stop the daemon
 ln-gossip-sim-cli stop
 ```

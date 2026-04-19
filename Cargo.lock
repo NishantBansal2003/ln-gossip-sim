@@ -490,6 +490,7 @@ dependencies = [
  "hex",
  "lightning",
  "lightning-net-tokio",
+ "serde_json",
  "tokio",
 ]
 

@@ -96,6 +96,7 @@ impl Daemon {
             Some("disconnect") => self.cmd_disconnect(&parts),
             Some("peers") => self.cmd_peers(),
             Some("info") => self.cmd_info(),
+            Some("mine") => self.cmd_mine(&parts),
             Some("stop") => {
                 self.shutdown();
                 "Stopping daemon\n".to_string()
@@ -167,6 +168,14 @@ impl Daemon {
             "[LN] node={} peers={peers}\n[Bitcoin] chain=regtest blocks={blocks} best={hash} balance={balance}\n",
             self.node_id
         )
+    }
+
+    fn cmd_mine(&self, parts: &[&str]) -> String {
+        let blocks: usize = match parts.get(1).and_then(|s| s.parse().ok()) {
+            Some(n) => n,
+            None => return "Usage: mine <blocks>\n".to_string(),
+        };
+        self.bitcoind.mine(blocks)
     }
 
     fn cmd_peers(&self) -> String {
