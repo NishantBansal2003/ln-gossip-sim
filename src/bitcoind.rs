@@ -36,9 +36,16 @@ impl BitcoindClient {
         }
 
         // Ensure wallet exists: try load, then create as fallback.
-        if base.load_wallet(WALLET_NAME).is_err() {
-            base.create_wallet(WALLET_NAME)
-                .map_err(|e| Error::Rpc(format!("create wallet: {e}")))?;
+        // load_wallet fails both when the wallet doesn't exist and when it's
+        // already loaded; only create if it truly doesn't exist yet.
+        if let Err(e) = base.load_wallet(WALLET_NAME) {
+            let msg = e.to_string();
+            if msg.contains("already loaded") {
+                // Wallet is already loaded from a previous run -- nothing to do.
+            } else {
+                base.create_wallet(WALLET_NAME)
+                    .map_err(|e| Error::Rpc(format!("create wallet: {e}")))?;
+            }
         }
 
         // Connect with wallet-scoped URL.
