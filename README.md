@@ -15,7 +15,7 @@ cargo build
 Start the daemon (requires a running bitcoind on regtest):
 
 ```
-ln-gossip-simd [--rpc-url http://127.0.0.1:18443] [--rpc-user user] [--rpc-pass password]
+ln-gossip-simd --rpc-url http://127.0.0.1:18443 --rpc-user user --rpc-pass password
 ```
 
 Use the CLI:

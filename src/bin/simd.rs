@@ -16,14 +16,14 @@ use tokio::sync::{Mutex, watch};
 #[derive(Parser)]
 #[command(name = "ln-gossip-simd", about = "LN gossip simulator daemon")]
 struct Args {
-    /// bitcoind RPC URL
-    #[arg(long, default_value = "http://127.0.0.1:18443")]
+    /// bitcoind RPC URL (e.g. http://127.0.0.1:18443)
+    #[arg(long)]
     rpc_url: String,
     /// bitcoind RPC user
-    #[arg(long, default_value = "user")]
+    #[arg(long)]
     rpc_user: String,
     /// bitcoind RPC password
-    #[arg(long, default_value = "password")]
+    #[arg(long)]
     rpc_pass: String,
 }
 
@@ -190,16 +190,25 @@ impl Daemon {
 async fn main() {
     let args = Args::parse();
 
-    let bitcoind = Arc::new(
-        BitcoindClient::new(&args.rpc_url, &args.rpc_user, &args.rpc_pass)
-            .expect("Failed to connect to bitcoind"),
-    );
+    let bitcoind = match BitcoindClient::new(&args.rpc_url, &args.rpc_user, &args.rpc_pass) {
+        Ok(b) => Arc::new(b),
+        Err(e) => {
+            eprintln!("Failed to connect to bitcoind: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let (daemon, mut stop_rx) = Daemon::new(bitcoind);
     log_info!(daemon.logger, "Connected to bitcoind at {}", args.rpc_url);
 
     let _ = std::fs::remove_file(SOCK_PATH);
-    let listener = UnixListener::bind(SOCK_PATH).expect("Failed to bind unix socket");
+    let listener = match UnixListener::bind(SOCK_PATH) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Failed to bind unix socket: {e}");
+            std::process::exit(1);
+        }
+    };
     log_info!(daemon.logger, "Listening on {}", SOCK_PATH);
 
     let ctrl_c = tokio::signal::ctrl_c();

@@ -54,9 +54,12 @@ fn main() {
         }
     };
 
-    stream.write_all(cmd.as_bytes()).unwrap();
-    stream.write_all(b"\n").unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    if let Err(e) = stream.write_all(cmd.as_bytes()) {
+        eprintln!("Failed to send command: {e}");
+        std::process::exit(1);
+    }
+    let _ = stream.write_all(b"\n");
+    let _ = stream.shutdown(std::net::Shutdown::Write);
 
     for line in BufReader::new(&stream).lines() {
         match line {
