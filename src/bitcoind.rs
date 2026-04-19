@@ -1,6 +1,8 @@
 //! Bitcoin Core RPC client wrapper.
 
 use bitcoin::Address;
+use bitcoin::key::PrivateKey;
+use bitcoin::secp256k1::{Secp256k1, rand};
 use corepc_client::client_sync::Auth;
 use corepc_client::client_sync::v30::Client;
 
@@ -66,41 +68,71 @@ impl BitcoindClient {
         }
     }
 
-    /// Create a fresh 2-of-2 P2WSH address from two wallet keys.
-    /// Returns (address, key1, key2) so callers can reference the keys
+    /// Create a fresh 2-of-2 P2WSH address from two random keys.
+    /// Returns (address, pubkey1, pubkey2) so callers can reference the keys
     /// later (e.g. for channel announcements / UtxoLookup).
+    /// Keys are imported with private keys so the wallet fully owns the output.
     pub fn new_funding_address(&self) -> Result<(Address, String, String), String> {
-        let a1 = self
-            .client
-            .new_address()
-            .map_err(|e| format!("address: {e}"))?;
-        let a2 = self
-            .client
-            .new_address()
-            .map_err(|e| format!("address: {e}"))?;
+        let secp = Secp256k1::new();
+        let (sk1, _) = secp.generate_keypair(&mut rand::thread_rng());
+        let (sk2, _) = secp.generate_keypair(&mut rand::thread_rng());
 
-        // addmultisigaddress with bech32 = native P2WSH, wallet-controlled.
-        let result: serde_json::Value = self
+        let priv1 = PrivateKey::new(sk1, bitcoin::Network::Regtest);
+        let priv2 = PrivateKey::new(sk2, bitcoin::Network::Regtest);
+        let pub1 = bitcoin::PublicKey::from_private_key(&secp, &priv1);
+        let pub2 = bitcoin::PublicKey::from_private_key(&secp, &priv2);
+
+        // Sort keys lexicographically (BOLT #3).
+        let (w1, w2, p1, p2) = if pub1 < pub2 {
+            (priv1.to_wif(), priv2.to_wif(), pub1, pub2)
+        } else {
+            (priv2.to_wif(), priv1.to_wif(), pub2, pub1)
+        };
+
+        // Descriptor with private keys so the wallet fully owns it.
+        let desc = format!("wsh(multi(2,{w1},{w2}))");
+        let info: serde_json::Value = self
             .client
             .call(
-                "addmultisigaddress",
-                &[
-                    serde_json::Value::from(2),
-                    serde_json::json!([a1.to_string(), a2.to_string()]),
-                    serde_json::Value::String(String::new()),
-                    serde_json::Value::String("bech32".to_string()),
-                ],
+                "getdescriptorinfo",
+                &[serde_json::Value::String(desc.clone())],
             )
-            .map_err(|e| format!("addmultisigaddress: {e}"))?;
+            .map_err(|e| format!("getdescriptorinfo: {e}"))?;
+        let checksum = info["checksum"].as_str().ok_or("missing checksum")?;
+        let desc_full = format!("{desc}#{checksum}");
 
-        let addr = result["address"]
+        // Derive the P2WSH address.
+        let addrs: serde_json::Value = self
+            .client
+            .call(
+                "deriveaddresses",
+                &[serde_json::Value::String(desc_full.clone())],
+            )
+            .map_err(|e| format!("deriveaddresses: {e}"))?;
+        let addr = addrs[0]
             .as_str()
-            .ok_or("missing address in response")?
+            .ok_or("missing address in deriveaddresses")?
             .parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
             .map_err(|e| format!("parse address: {e}"))?
             .assume_checked();
 
-        Ok((addr, a1.to_string(), a2.to_string()))
+        // Import with private keys -- wallet can track and spend.
+        let result: serde_json::Value = self
+            .client
+            .call(
+                "importdescriptors",
+                &[serde_json::json!([{
+                    "desc": desc_full,
+                    "timestamp": "now",
+                    "active": false
+                }])],
+            )
+            .map_err(|e| format!("importdescriptors: {e}"))?;
+        if let Some(false) = result[0]["success"].as_bool() {
+            return Err(format!("importdescriptors: {}", result[0]["error"]));
+        }
+
+        Ok((addr, p1.to_string(), p2.to_string()))
     }
 
     fn mine_to_funding(&self, blocks: usize) -> Result<String, String> {
