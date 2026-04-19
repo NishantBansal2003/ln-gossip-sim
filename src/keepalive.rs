@@ -1,8 +1,8 @@
 //! Peer keepalive timer.
 //!
-//! Periodically calls `timer_tick_occurred` (~10s) which sends pings and
-//! disconnects unresponsive peers. Pong replies are handled automatically
-//! by `PeerManager`.
+//! Spawned after the first Noise handshake succeeds. Periodically calls
+//! `timer_tick_occurred` (~10s) which sends pings and disconnects
+//! unresponsive peers. Exits when all peers disconnect.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,15 +19,16 @@ pub fn spawn(
     let pm = Arc::clone(peer_manager);
     let logger = Arc::clone(logger);
     tokio::spawn(async move {
+        log_info!(logger, "Keepalive started");
         loop {
             tokio::time::sleep(KEEPALIVE_INTERVAL).await;
-            log_trace!(logger, "Keepalive tick");
             pm.timer_tick_occurred();
             pm.process_events();
             if pm.list_peers().is_empty() {
-                log_info!(logger, "All peers disconnected");
+                log_info!(logger, "All peers disconnected, keepalive stopped");
                 break;
             }
+            log_trace!(logger, "Keepalive tick");
         }
     })
 }

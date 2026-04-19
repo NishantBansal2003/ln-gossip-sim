@@ -9,12 +9,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::watch;
+use tokio::sync::{Mutex, watch};
 
 struct Daemon {
     peer_manager: Arc<types::PeerMgr>,
     logger: Arc<SimLogger>,
     stop_tx: watch::Sender<bool>,
+    keepalive_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Daemon {
@@ -60,6 +61,7 @@ impl Daemon {
             peer_manager,
             logger,
             stop_tx,
+            keepalive_handle: Mutex::new(None),
         });
         (daemon, stop_rx)
     }
@@ -104,9 +106,21 @@ impl Daemon {
         };
 
         match noise::connect(&self.peer_manager, pubkey, addr, &self.logger).await {
-            Some(_) => format!("Connected to {pubkey}\n"),
+            Some(_) => {
+                self.ensure_keepalive().await;
+                format!("Connected to {pubkey}\n")
+            }
             None => "Connection failed\n".to_string(),
         }
+    }
+
+    /// Spawns the keepalive timer if not already running.
+    async fn ensure_keepalive(&self) {
+        let mut handle = self.keepalive_handle.lock().await;
+        if handle.as_ref().is_some_and(|h| !h.is_finished()) {
+            return;
+        }
+        *handle = Some(keepalive::spawn(&self.peer_manager, &self.logger));
     }
 
     fn cmd_disconnect(&self, parts: &[&str]) -> String {
@@ -146,7 +160,6 @@ impl Daemon {
 #[tokio::main]
 async fn main() {
     let (daemon, mut stop_rx) = Daemon::new();
-    let _keepalive = keepalive::spawn(&daemon.peer_manager, &daemon.logger);
 
     let _ = std::fs::remove_file(SOCK_PATH);
     let listener = UnixListener::bind(SOCK_PATH).expect("Failed to bind unix socket");

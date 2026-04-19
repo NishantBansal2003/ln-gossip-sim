@@ -1,19 +1,12 @@
+use chrono::Utc;
 use lightning::util::logger::{Logger, Record};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct SimLogger;
 
 impl Logger for SimLogger {
     fn log(&self, record: Record) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        eprintln!(
-            "[{:.3}] {:<5} {}",
-            now.as_secs_f64(),
-            record.level,
-            record.args
-        );
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        eprintln!("[{}] {:<5} {}", now, record.level, record.args);
     }
 }
 
