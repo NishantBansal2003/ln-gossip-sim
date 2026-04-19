@@ -8,4 +8,17 @@ lightning = "0.2.2"
 lightning-net-tokio = "0.2.0"
 hex = "0.4.3"
 bitcoin = "0.32.8"
-tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "time", "signal", "net", "io-util"] }
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "ln-gossip-simd"
+path = "src/bin/simd.rs"
+
+[[bin]]
+name = "ln-gossip-sim-cli"
+path = "src/bin/cli.rs"
+
+[lib]
+name = "ln_gossip_sim"
+path = "src/lib.rs"

@@ -1,0 +1,64 @@
+use clap::{Parser, Subcommand};
+use ln_gossip_sim::SOCK_PATH;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+
+#[derive(Parser)]
+#[command(
+    name = "ln-gossip-sim-cli",
+    about = "Control a running ln-gossip-simd daemon"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Connect to a Lightning node
+    Connect {
+        /// Node public key (hex)
+        pubkey: String,
+        /// Address as host:port
+        addr: String,
+    },
+    /// Disconnect from a Lightning node
+    Disconnect {
+        /// Node public key (hex)
+        pubkey: String,
+    },
+    /// List connected peers
+    Peers,
+    /// Stop the daemon
+    Stop,
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    let cmd = match &cli.command {
+        Command::Connect { pubkey, addr } => format!("connect {pubkey} {addr}"),
+        Command::Disconnect { pubkey } => format!("disconnect {pubkey}"),
+        Command::Peers => "peers".to_string(),
+        Command::Stop => "stop".to_string(),
+    };
+
+    let mut stream = match UnixStream::connect(SOCK_PATH) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("Cannot connect to daemon. Is ln-gossip-simd running?");
+            std::process::exit(1);
+        }
+    };
+
+    stream.write_all(cmd.as_bytes()).unwrap();
+    stream.write_all(b"\n").unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+
+    for line in BufReader::new(&stream).lines() {
+        match line {
+            Ok(l) => println!("{}", l),
+            Err(_) => break,
+        }
+    }
+}
