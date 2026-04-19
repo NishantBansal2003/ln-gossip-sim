@@ -1,2 +1,37 @@
 # ln-gossip-sim
-Lightning Network gossip message simulator
+
+Lightning Network gossip simulator for regtest. Connects to LN nodes over the
+Bolt 8 Noise protocol, exchanges init/ping/pong messages.
+
+## Build
+
+```
+cargo build
+```
+
+## Usage
+
+Start the daemon:
+
+```
+ln-gossip-simd
+```
+
+Use the CLI:
+
+```
+# Connect to a node
+ln-gossip-sim-cli connect <pubkey_hex> <host:port>
+
+# List connected peers
+ln-gossip-sim-cli peers
+
+# Disconnect a peer
+ln-gossip-sim-cli disconnect <pubkey_hex>
+
+# Stop the daemon
+ln-gossip-sim-cli stop
+```
+
+The daemon listens on `/tmp/ln-gossip-sim.sock` for CLI commands and can be
+stopped with `Ctrl+C` or the `stop` command.
