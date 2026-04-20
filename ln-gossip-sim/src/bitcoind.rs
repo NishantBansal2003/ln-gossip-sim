@@ -10,6 +10,12 @@ use crate::error::Error;
 
 const WALLET_NAME: &str = "ln-gossip-sim";
 
+/// Bitcoin regtest genesis block hash (little-endian, as used in BOLT messages).
+pub const REGTEST_CHAIN_HASH: [u8; 32] = [
+    0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b, 0x59, 0xca, 0xaf, 0x12, 0x60, 0x43, 0xeb, 0x5b, 0xbf,
+    0x28, 0xc3, 0x4f, 0x3a, 0x5e, 0x33, 0x2a, 0x1f, 0xc7, 0xb2, 0xb7, 0x3c, 0xf1, 0x88, 0x91, 0x0f,
+];
+
 /// Keypair material from a 2-of-2 P2WSH funding address.
 /// Keys are sorted lexicographically per BOLT #3.
 pub struct FundingKeys {
@@ -89,7 +95,7 @@ impl BitcoindClient {
 
     pub fn mine(&self, blocks: usize) -> String {
         match self.mine_to_funding(blocks) {
-            Ok(msg) => msg,
+            Ok((msg, _, _)) => msg,
             Err(e) => format!("{e}\n"),
         }
     }
@@ -176,7 +182,15 @@ impl BitcoindClient {
         })
     }
 
-    fn mine_to_funding(&self, blocks: usize) -> Result<String, Error> {
+    /// Mine `blocks` blocks to a fresh 2-of-2 P2WSH funding address.
+    ///
+    /// Returns the human-readable result string, the `FundingKeys`, and
+    /// the `short_channel_id` derived from the first mined block's coinbase.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if address creation or mining RPC calls fail.
+    pub fn mine_to_funding(&self, blocks: usize) -> Result<(String, FundingKeys, u64), Error> {
         let funding = self.new_funding_address()?;
 
         let r = self
@@ -184,10 +198,47 @@ impl BitcoindClient {
             .generate_to_address(blocks, &funding.address)
             .map_err(|e| Error::Rpc(e.to_string()))?;
 
-        Ok(format!(
-            "Mined {} block(s) to {}\n",
-            r.0.len(),
-            funding.address
-        ))
+        // The first mined block's coinbase (tx_index=0) pays to our address.
+        // Derive the SCID from that block.
+        let first_hash = r.0[0].clone();
+        let block: serde_json::Value = self
+            .client
+            .call("getblock", &[serde_json::Value::String(first_hash.clone())])
+            .map_err(|e| Error::Rpc(e.to_string()))?;
+        let block_height = block["height"]
+            .as_u64()
+            .ok_or_else(|| Error::Rpc("block has no height".into()))?;
+
+        // Coinbase is always tx_index 0. Find the output that pays to our
+        // funding address (on regtest with segwit, output 0 is the witness
+        // commitment OP_RETURN, so the actual payout may be at index 1+).
+        let coinbase_txid = block["tx"][0]
+            .as_str()
+            .ok_or_else(|| Error::Rpc("block has no coinbase txid".into()))?;
+        let coinbase: serde_json::Value = self
+            .client
+            .call(
+                "getrawtransaction",
+                &[
+                    serde_json::Value::String(coinbase_txid.to_string()),
+                    serde_json::json!(true),
+                    serde_json::Value::String(first_hash),
+                ],
+            )
+            .map_err(|e| Error::Rpc(e.to_string()))?;
+        let vout = coinbase["vout"]
+            .as_array()
+            .ok_or_else(|| Error::Rpc("coinbase has no vout".into()))?;
+        let addr_str = funding.address.to_string();
+        let output_index = vout
+            .iter()
+            .position(|o| o["scriptPubKey"]["address"].as_str() == Some(&addr_str))
+            .ok_or_else(|| Error::Rpc("funding output not found in coinbase".into()))?;
+
+        let scid = (block_height << 40) | (output_index as u64);
+
+        let msg = format!("Mined {} block(s) to {}\n", r.0.len(), funding.address);
+
+        Ok((msg, funding, scid))
     }
 }

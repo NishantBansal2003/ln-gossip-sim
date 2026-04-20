@@ -1,7 +1,8 @@
 //! BOLT 7 `channel_announcement` message.
 
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::hashes::{Hash, sha256d};
 use bitcoin::secp256k1::ecdsa::Signature;
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use crate::BoltError;
 use crate::types::CHAIN_HASH_SIZE;
@@ -100,6 +101,80 @@ impl ChannelAnnouncement {
         let tx_index = (self.short_channel_id >> 16) & 0xFF_FFFF;
         let output = self.short_channel_id & 0xFFFF;
         format!("{block}x{tx_index}x{output}")
+    }
+
+    /// Computes the double-SHA256 hash that must be signed.
+    ///
+    /// Per BOLT 7, the hash covers the encoded message starting at byte
+    /// offset 256 (after the four 64-byte signatures), i.e. from the
+    /// `features` field through the end.
+    #[must_use]
+    pub fn signature_hash(&self) -> bitcoin::secp256k1::Message {
+        let mut data = Vec::new();
+        self.features.write(&mut data);
+        self.chain_hash.write(&mut data);
+        self.short_channel_id.write(&mut data);
+        self.node_id_1.write(&mut data);
+        self.node_id_2.write(&mut data);
+        self.bitcoin_key_1.write(&mut data);
+        self.bitcoin_key_2.write(&mut data);
+        let hash = sha256d::Hash::hash(&data);
+        bitcoin::secp256k1::Message::from_digest(hash.to_byte_array())
+    }
+
+    /// Creates a new `ChannelAnnouncement` and signs it with the provided keys.
+    ///
+    /// `node_sk_1` / `node_sk_2` are the node secrets for `node_id_1` / `node_id_2`.
+    /// `bitcoin_sk_1` / `bitcoin_sk_2` are the funding key secrets.
+    ///
+    /// The caller must ensure that `node_id_1 < node_id_2` lexicographically
+    /// (compressed public key bytes), as required by BOLT 7.
+    #[must_use]
+    pub fn new_signed(
+        features: Vec<u8>,
+        chain_hash: [u8; CHAIN_HASH_SIZE],
+        short_channel_id: u64,
+        node_sk_1: &SecretKey,
+        node_sk_2: &SecretKey,
+        bitcoin_sk_1: &SecretKey,
+        bitcoin_sk_2: &SecretKey,
+    ) -> Self {
+        let secp = Secp256k1::signing_only();
+
+        let node_id_1 = PublicKey::from_secret_key(&secp, node_sk_1);
+        let node_id_2 = PublicKey::from_secret_key(&secp, node_sk_2);
+        let bitcoin_key_1 = PublicKey::from_secret_key(&secp, bitcoin_sk_1);
+        let bitcoin_key_2 = PublicKey::from_secret_key(&secp, bitcoin_sk_2);
+
+        // signature_hash() only hashes from `features` onward (BOLT 7 offset
+        // 256), so the signature fields don't affect the hash.  Use a throwaway
+        // signature as placeholder, compute the real hash, then overwrite.
+        let placeholder = secp.sign_ecdsa(
+            &bitcoin::secp256k1::Message::from_digest([0u8; 32]),
+            node_sk_1,
+        );
+
+        let mut ann = Self {
+            node_signature_1: placeholder,
+            node_signature_2: placeholder,
+            bitcoin_signature_1: placeholder,
+            bitcoin_signature_2: placeholder,
+            features,
+            chain_hash,
+            short_channel_id,
+            node_id_1,
+            node_id_2,
+            bitcoin_key_1,
+            bitcoin_key_2,
+        };
+
+        let msg = ann.signature_hash();
+        ann.node_signature_1 = secp.sign_ecdsa(&msg, node_sk_1);
+        ann.node_signature_2 = secp.sign_ecdsa(&msg, node_sk_2);
+        ann.bitcoin_signature_1 = secp.sign_ecdsa(&msg, bitcoin_sk_1);
+        ann.bitcoin_signature_2 = secp.sign_ecdsa(&msg, bitcoin_sk_2);
+
+        ann
     }
 }
 

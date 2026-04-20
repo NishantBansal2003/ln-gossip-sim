@@ -1,7 +1,7 @@
 use bitcoin::secp256k1::PublicKey;
-use bolt::{Message, Ping};
+use bolt::{ChannelAnnouncement, Message, Ping};
 use clap::Parser;
-use ln_gossip_sim::bitcoind::BitcoindClient;
+use ln_gossip_sim::bitcoind::{BitcoindClient, REGTEST_CHAIN_HASH};
 use ln_gossip_sim::conn::{self, NoiseWriter};
 use ln_gossip_sim::{SOCK_PATH, keys};
 use std::collections::HashMap;
@@ -63,6 +63,7 @@ impl Daemon {
         match parts.first().copied() {
             Some("connect") => self.cmd_connect(&parts).await,
             Some("disconnect") => self.cmd_disconnect(&parts).await,
+            Some("sendchannelannouncement") => self.cmd_send_channel_announcement(&parts).await,
             Some("peers") => self.cmd_peers().await,
             Some("info") => self.cmd_info().await,
             Some("mine") => self.cmd_mine(&parts).await,
@@ -188,6 +189,64 @@ impl Daemon {
         } else {
             format!("Not connected to {pubkey}\n")
         }
+    }
+
+    async fn cmd_send_channel_announcement(&self, parts: &[&str]) -> String {
+        if parts.len() != 2 {
+            return "Usage: sendchannelannouncement <pubkey_hex>\n".to_string();
+        }
+        let Some(peer_pubkey) = hex::decode(parts[1])
+            .ok()
+            .and_then(|b| PublicKey::from_slice(&b).ok())
+        else {
+            return "Invalid pubkey\n".to_string();
+        };
+
+        // Check if peer is connected.
+        let writer = {
+            let peers = self.peers.lock().await;
+            let Some(peer) = peers.get(&peer_pubkey) else {
+                return format!("Not connected to {peer_pubkey}\n");
+            };
+            Arc::clone(&peer.writer)
+        };
+
+        // Mine 6 blocks to a fresh 2-of-2 P2WSH funding address.
+        let btc = Arc::clone(&self.bitcoind);
+        let fund_result = tokio::task::spawn_blocking(move || btc.mine_to_funding(6)).await;
+        let (_, funding, scid) = match fund_result {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => return format!("Funding failed: {e}\n"),
+            Err(e) => return format!("Task failed: {e}\n"),
+        };
+
+        // Both node_id_1 and node_id_2 are ours (we own both sides).
+        let our_sk = keys::node_secret();
+        let (bitcoin_sk_1, bitcoin_sk_2) = (funding.sk1, funding.sk2);
+
+        let ann = ChannelAnnouncement::new_signed(
+            Vec::new(),
+            REGTEST_CHAIN_HASH,
+            scid,
+            &our_sk,
+            &our_sk,
+            &bitcoin_sk_1,
+            &bitcoin_sk_2,
+        );
+
+        let msg = Message::ChannelAnnouncement(Box::new(ann.clone()));
+        if let Err(e) = writer.lock().await.send(&msg.encode()).await {
+            return format!("Send failed: {e}\n");
+        }
+
+        log::info!(
+            "Sent channel_announcement scid={} to {peer_pubkey}",
+            ann.scid_str()
+        );
+        format!(
+            "Sent channel_announcement scid={} to {peer_pubkey}\n",
+            ann.scid_str()
+        )
     }
 
     async fn cmd_peers(&self) -> String {
