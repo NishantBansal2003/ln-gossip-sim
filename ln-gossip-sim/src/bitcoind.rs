@@ -78,7 +78,7 @@ impl BitcoindClient {
     }
 
     pub fn block_count(&self) -> u64 {
-        self.client.get_block_count().map(|c| c.0).unwrap_or(0)
+        self.client.get_block_count().map_or(0, |c| c.0)
     }
 
     pub fn best_block_hash(&self) -> String {
