@@ -32,6 +32,13 @@ impl NoiseWriter {
     ///
     /// Returns `NoiseError::Io` if writing to the TCP stream fails.
     pub async fn send(&mut self, msg: &[u8]) -> Result<(), NoiseError> {
+        if msg.len() > noise::cipher::MAX_MESSAGE_SIZE {
+            return Err(NoiseError::Io(format!(
+                "message too large: {} bytes (max {})",
+                msg.len(),
+                noise::cipher::MAX_MESSAGE_SIZE,
+            )));
+        }
         let encrypted = self.cipher.encrypt(msg);
         self.stream
             .write_all(&encrypted)

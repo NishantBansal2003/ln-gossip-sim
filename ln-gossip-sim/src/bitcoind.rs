@@ -46,14 +46,14 @@ impl BitcoindClient {
         let base =
             Client::new_with_auth(url, auth.clone()).map_err(|e| Error::Rpc(e.to_string()))?;
 
-        let info = base
-            .get_blockchain_info()
+        let info: serde_json::Value = base
+            .call("getblockchaininfo", &[])
             .map_err(|e| Error::Rpc(e.to_string()))?;
-        if info.chain != "regtest" {
-            return Err(Error::Chain(format!(
-                "expected regtest, got {}",
-                info.chain
-            )));
+        let chain = info["chain"]
+            .as_str()
+            .ok_or_else(|| Error::Rpc("missing chain field".into()))?;
+        if chain != "regtest" {
+            return Err(Error::Chain(format!("expected regtest, got {chain}")));
         }
 
         // Ensure wallet exists: try load, then create as fallback.

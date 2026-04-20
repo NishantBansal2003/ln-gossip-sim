@@ -23,9 +23,13 @@ impl Pong {
     }
 
     /// Creates a pong response to a ping.
+    ///
+    /// The response is capped at 65531 padding bytes so the full
+    /// wire message (2-byte type + 2-byte length prefix + padding)
+    /// stays within the BOLT 8 `MAX_MESSAGE_SIZE` of 65535.
     #[must_use]
     pub fn respond_to(ping: &Ping) -> Self {
-        Self::new(ping.num_pong_bytes)
+        Self::new(ping.num_pong_bytes.min(65531))
     }
 
     /// Encodes to wire format (without message type prefix).
