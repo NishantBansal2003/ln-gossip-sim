@@ -1,5 +1,6 @@
 //! BOLT message encoding and decoding.
 
+pub mod channel_announcement;
 pub mod error;
 pub mod init;
 pub mod ping;
@@ -9,6 +10,7 @@ pub mod types;
 pub mod warning;
 pub mod wire;
 
+pub use channel_announcement::ChannelAnnouncement;
 pub use error::Error;
 pub use init::{Init, InitTlvs};
 pub use ping::Ping;
@@ -51,6 +53,7 @@ pub mod msg_type {
     pub const ERROR: u16 = 17;
     pub const PING: u16 = 18;
     pub const PONG: u16 = 19;
+    pub const CHANNEL_ANNOUNCEMENT: u16 = 256;
 }
 
 /// A decoded BOLT message.
@@ -61,6 +64,7 @@ pub enum Message {
     Error(Error),
     Ping(Ping),
     Pong(Pong),
+    ChannelAnnouncement(Box<ChannelAnnouncement>),
     /// Unknown message type (odd types accepted, even rejected).
     Unknown {
         msg_type: u16,
@@ -78,6 +82,7 @@ impl Message {
             Self::Error(_) => msg_type::ERROR,
             Self::Ping(_) => msg_type::PING,
             Self::Pong(_) => msg_type::PONG,
+            Self::ChannelAnnouncement(_) => msg_type::CHANNEL_ANNOUNCEMENT,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
     }
@@ -93,6 +98,7 @@ impl Message {
             Self::Error(m) => out.extend(m.encode()),
             Self::Ping(m) => out.extend(m.encode()),
             Self::Pong(m) => out.extend(m.encode()),
+            Self::ChannelAnnouncement(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
         out
@@ -113,6 +119,9 @@ impl Message {
             msg_type::ERROR => Ok(Self::Error(Error::decode(cursor)?)),
             msg_type::PING => Ok(Self::Ping(Ping::decode(cursor)?)),
             msg_type::PONG => Ok(Self::Pong(Pong::decode(cursor)?)),
+            msg_type::CHANNEL_ANNOUNCEMENT => Ok(Self::ChannelAnnouncement(Box::new(
+                ChannelAnnouncement::decode(cursor)?,
+            ))),
             _ => {
                 if msg_type % 2 == 0 {
                     Err(BoltError::UnknownEvenType(msg_type))

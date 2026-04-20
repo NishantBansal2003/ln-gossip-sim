@@ -125,6 +125,12 @@ impl Daemon {
                                     Ok(Message::Warning(_)) => {
                                         log::info!("Received Warning from {peer_id}");
                                     }
+                                    Ok(Message::ChannelAnnouncement(ann)) => {
+                                        log::info!(
+                                            "Received channel_announcement scid={} from {peer_id}",
+                                            ann.scid_str()
+                                        );
+                                    }
                                     Ok(msg) => {
                                         log::info!("Received msg type {} from {peer_id}", msg.msg_type());
                                     }
