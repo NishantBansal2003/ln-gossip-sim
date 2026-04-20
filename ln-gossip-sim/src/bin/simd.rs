@@ -97,6 +97,7 @@ impl Daemon {
         let writer = Arc::new(Mutex::new(writer));
         let ping_writer = Arc::clone(&writer);
         let peer_id = pubkey;
+        let daemon = Arc::clone(self);
         let read_handle = tokio::spawn(async move {
             let mut ticker = interval(PING_INTERVAL);
             loop {
@@ -110,19 +111,26 @@ impl Daemon {
                                 }
                                 match Message::decode(&raw) {
                                     Ok(Message::Ping(ping)) => {
+                                        log::info!("Received Ping from {peer_id}");
                                         let resp = Message::Pong(bolt::Pong::respond_to(&ping));
                                         if let Err(e) = ping_writer.lock().await.send(&resp.encode()).await {
                                             log::error!("Peer {peer_id} pong error: {e}");
                                             break;
                                         }
+                                        log::info!("Sent Pong to {peer_id}");
                                     }
-                                    Ok(Message::Pong(_) | Message::Warning(_)) => {}
+                                    Ok(Message::Pong(_)) => {
+                                        log::info!("Received Pong from {peer_id}");
+                                    }
+                                    Ok(Message::Warning(_)) => {
+                                        log::info!("Received Warning from {peer_id}");
+                                    }
                                     Ok(msg) => {
-                                        log::trace!("Received msg type {} from {peer_id}", msg.msg_type());
+                                        log::info!("Received msg type {} from {peer_id}", msg.msg_type());
                                     }
                                     Err(_) => {
                                         let mt = u16::from_be_bytes([raw[0], raw[1]]);
-                                        log::trace!("Received unknown msg type {mt} from {peer_id}");
+                                        log::info!("Received unknown msg type {mt} from {peer_id}");
                                     }
                                 }
                             }
@@ -138,10 +146,12 @@ impl Daemon {
                             log::error!("Peer {peer_id} ping error: {e}");
                             break;
                         }
-                        log::trace!("Sent Ping to {peer_id}");
+                        log::info!("Sent Ping to {peer_id}");
                     }
                 }
             }
+            log::info!("Peer {peer_id} disconnected, removing from peer list");
+            daemon.peers.lock().await.remove(&peer_id);
         });
         let mut peers = self.peers.lock().await;
         peers.insert(
@@ -167,6 +177,7 @@ impl Daemon {
         let mut peers = self.peers.lock().await;
         if let Some(peer) = peers.remove(&pubkey) {
             peer.read_handle.abort();
+            log::info!("Disconnected peer {pubkey}");
             format!("Disconnected {pubkey}\n")
         } else {
             format!("Not connected to {pubkey}\n")

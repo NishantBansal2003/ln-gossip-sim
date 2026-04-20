@@ -165,14 +165,12 @@ pub async fn connect(
         cipher: recv_cipher,
     };
 
-    let init_msg = Message::Init(Init::empty());
-    writer.send(&init_msg.encode()).await?;
-    log::info!("Sent Init to {their_node_id}");
-
+    // Receive Init first so we can echo back compatible features.
     let init_resp = reader.recv().await?;
-    match Message::decode(&init_resp) {
-        Ok(Message::Init(_)) => {
+    let received_init = match Message::decode(&init_resp) {
+        Ok(Message::Init(init)) => {
             log::info!("Received Init from {their_node_id}");
+            init
         }
         Ok(other) => {
             return Err(NoiseError::Io(format!(
@@ -183,7 +181,13 @@ pub async fn connect(
         Err(e) => {
             return Err(NoiseError::Io(format!("failed to decode Init: {e}")));
         }
-    }
+    };
+
+    // Echo the peer's features so we appear compatible with their
+    // required feature bits (data-loss-protect, static-remote-key, etc.).
+    let reply = Message::Init(Init::echo(&received_init));
+    writer.send(&reply.encode()).await?;
+    log::info!("Sent Init to {their_node_id}");
 
     Ok((writer, reader, their_node_id))
 }
