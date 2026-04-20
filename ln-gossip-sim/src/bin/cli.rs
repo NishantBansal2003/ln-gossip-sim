@@ -36,6 +36,11 @@ enum Command {
         /// Number of blocks to mine
         blocks: usize,
     },
+    /// Send a `channel_announcement` to a connected peer
+    SendChannelAnnouncement {
+        /// Node public key (hex) of connected peer
+        pubkey: String,
+    },
     /// Stop the daemon
     Stop,
 }
@@ -49,6 +54,9 @@ fn main() {
         Command::Peers => "peers".to_string(),
         Command::Info => "info".to_string(),
         Command::Mine { blocks } => format!("mine {blocks}"),
+        Command::SendChannelAnnouncement { pubkey } => {
+            format!("sendchannelannouncement {pubkey}")
+        }
         Command::Stop => "stop".to_string(),
     };
 
