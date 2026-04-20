@@ -1,9 +1,12 @@
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use clap::Parser;
-use lightning::ln::peer_handler::PeerManager;
+use lightning::ln::peer_handler::{
+    ErroringMessageHandler, IgnoringMessageHandler, MessageHandler, PeerManager,
+};
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::sign::KeysManager;
 use ln_gossip_sim::bitcoind::BitcoindClient;
+use ln_gossip_sim::gossip::GossipBroadcaster;
 use ln_gossip_sim::log::SimLogger;
 use ln_gossip_sim::{SOCK_PATH, keepalive, keys, log_error, log_info, noise, types};
 use std::net::SocketAddr;
@@ -30,6 +33,8 @@ struct Args {
 struct Daemon {
     node_id: PublicKey,
     peer_manager: Arc<types::PeerMgr>,
+    #[allow(dead_code)]
+    gossip_broadcaster: Arc<GossipBroadcaster>,
     bitcoind: Arc<BitcoindClient>,
     logger: Arc<SimLogger>,
     stop_tx: watch::Sender<bool>,
@@ -62,8 +67,16 @@ impl Daemon {
             Arc::clone(&logger),
         ));
 
-        let peer_manager: Arc<types::PeerMgr> = Arc::new(PeerManager::new_routing_only(
-            Arc::clone(&gossip_sync),
+        let gossip_broadcaster = Arc::new(GossipBroadcaster::new());
+
+        let peer_manager: Arc<types::PeerMgr> = Arc::new(PeerManager::new(
+            MessageHandler {
+                chan_handler: ErroringMessageHandler::new(),
+                route_handler: Arc::clone(&gossip_sync),
+                onion_message_handler: IgnoringMessageHandler {},
+                custom_message_handler: IgnoringMessageHandler {},
+                send_only_message_handler: Arc::clone(&gossip_broadcaster),
+            },
             cur.as_secs() as u32,
             &keys::EPHEMERAL,
             Arc::clone(&logger),
@@ -75,6 +88,7 @@ impl Daemon {
         let daemon = Arc::new(Self {
             node_id,
             peer_manager,
+            gossip_broadcaster,
             bitcoind,
             logger,
             stop_tx,

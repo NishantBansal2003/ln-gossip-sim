@@ -2,6 +2,7 @@
 pub mod log;
 pub mod bitcoind;
 pub mod error;
+pub mod gossip;
 pub mod keepalive;
 pub mod keys;
 pub mod noise;

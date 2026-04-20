@@ -6,6 +6,7 @@ use lightning::sign::KeysManager;
 use lightning_net_tokio::SocketDescriptor;
 use std::sync::Arc;
 
+use crate::gossip::GossipBroadcaster;
 use crate::log::SimLogger;
 
 pub type GossipSync = P2PGossipSync<
@@ -15,6 +16,8 @@ pub type GossipSync = P2PGossipSync<
 >;
 
 /// Routing-only peer manager; no channel or onion message handling.
+/// `GossipBroadcaster` lets us inject broadcast events that `process_events()`
+/// sends to all peers over Noise connections.
 pub type PeerMgr = PeerManager<
     SocketDescriptor,
     ErroringMessageHandler,
@@ -23,5 +26,5 @@ pub type PeerMgr = PeerManager<
     Arc<SimLogger>,
     IgnoringMessageHandler,
     Arc<KeysManager>,
-    IgnoringMessageHandler,
+    Arc<GossipBroadcaster>,
 >;
