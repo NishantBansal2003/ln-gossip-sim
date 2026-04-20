@@ -2,13 +2,23 @@
 
 use bitcoin::Address;
 use bitcoin::key::PrivateKey;
-use bitcoin::secp256k1::{Secp256k1, rand};
+use bitcoin::secp256k1::{Secp256k1, SecretKey, rand};
 use corepc_client::client_sync::Auth;
 use corepc_client::client_sync::v30::Client;
 
 use crate::error::Error;
 
 const WALLET_NAME: &str = "ln-gossip-sim";
+
+/// Keypair material from a 2-of-2 P2WSH funding address.
+/// Keys are sorted lexicographically per BOLT #3.
+pub struct FundingKeys {
+    pub address: Address,
+    pub sk1: SecretKey,
+    pub sk2: SecretKey,
+    pub pk1: bitcoin::PublicKey,
+    pub pk2: bitcoin::PublicKey,
+}
 
 /// Wrapper around `corepc-client` for bitcoind RPC.
 pub struct BitcoindClient {
@@ -82,10 +92,10 @@ impl BitcoindClient {
     }
 
     /// Create a fresh 2-of-2 P2WSH address from two random keys.
-    /// Returns (address, pubkey1, pubkey2) so callers can reference the keys
-    /// later (e.g. for channel announcements / UtxoLookup).
+    /// Returns `FundingKeys` with the address, secret keys, and public keys
+    /// (sorted lexicographically per BOLT #3).
     /// Keys are imported with private keys so the wallet fully owns the output.
-    pub fn new_funding_address(&self) -> Result<(Address, String, String), Error> {
+    pub fn new_funding_address(&self) -> Result<FundingKeys, Error> {
         let secp = Secp256k1::new();
         let (sk1, _) = secp.generate_keypair(&mut rand::thread_rng());
         let (sk2, _) = secp.generate_keypair(&mut rand::thread_rng());
@@ -96,10 +106,10 @@ impl BitcoindClient {
         let pub2 = bitcoin::PublicKey::from_private_key(&secp, &priv2);
 
         // Sort keys lexicographically (BOLT #3).
-        let (w1, w2, p1, p2) = if pub1 < pub2 {
-            (priv1.to_wif(), priv2.to_wif(), pub1, pub2)
+        let (w1, w2, sorted_sk1, sorted_sk2, p1, p2) = if pub1 < pub2 {
+            (priv1.to_wif(), priv2.to_wif(), sk1, sk2, pub1, pub2)
         } else {
-            (priv2.to_wif(), priv1.to_wif(), pub2, pub1)
+            (priv2.to_wif(), priv1.to_wif(), sk2, sk1, pub2, pub1)
         };
 
         // Descriptor with private keys so the wallet fully owns it.
@@ -150,17 +160,27 @@ impl BitcoindClient {
             )));
         }
 
-        Ok((addr, p1.to_string(), p2.to_string()))
+        Ok(FundingKeys {
+            address: addr,
+            sk1: sorted_sk1,
+            sk2: sorted_sk2,
+            pk1: p1,
+            pk2: p2,
+        })
     }
 
     fn mine_to_funding(&self, blocks: usize) -> Result<String, Error> {
-        let (addr, _, _) = self.new_funding_address()?;
+        let funding = self.new_funding_address()?;
 
         let r = self
             .client
-            .generate_to_address(blocks, &addr)
+            .generate_to_address(blocks, &funding.address)
             .map_err(|e| Error::Rpc(e.to_string()))?;
 
-        Ok(format!("Mined {} block(s) to {addr}\n", r.0.len()))
+        Ok(format!(
+            "Mined {} block(s) to {}\n",
+            r.0.len(),
+            funding.address
+        ))
     }
 }
