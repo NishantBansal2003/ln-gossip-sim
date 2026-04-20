@@ -1,0 +1,116 @@
+//! High-level encrypted connection for Lightning Network peers.
+
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::time::Duration;
+
+use bitcoin::secp256k1::{PublicKey, SecretKey};
+
+use crate::cipher::{ENCRYPTED_LENGTH_SIZE, MAC_SIZE, MAX_MESSAGE_SIZE, NoiseCipher};
+use crate::error::NoiseError;
+use crate::handshake::{ACT_TWO_SIZE, NoiseHandshake};
+
+/// A Noise-encrypted connection to a Lightning Network peer.
+///
+/// Wraps a TCP stream and provides encrypted message sending and receiving
+/// using the BOLT 8 Noise protocol.
+pub struct NoiseConnection {
+    stream: TcpStream,
+    cipher: NoiseCipher,
+}
+
+impl NoiseConnection {
+    /// Connects to a remote Lightning node and performs the Noise handshake.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if TCP connection or Noise handshake fails.
+    pub fn connect(
+        addr: SocketAddr,
+        remote_pubkey: PublicKey,
+        local_static: SecretKey,
+        local_ephemeral: SecretKey,
+        timeout: Duration,
+    ) -> Result<Self, ConnectionError> {
+        let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
+        stream.set_nodelay(true)?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
+
+        let cipher =
+            Self::perform_handshake(&mut stream, local_static, local_ephemeral, remote_pubkey)?;
+
+        Ok(Self { stream, cipher })
+    }
+
+    /// Performs the Noise handshake as initiator.
+    fn perform_handshake(
+        stream: &mut TcpStream,
+        local_static: SecretKey,
+        local_ephemeral: SecretKey,
+        remote_pubkey: PublicKey,
+    ) -> Result<NoiseCipher, ConnectionError> {
+        let mut handshake =
+            NoiseHandshake::new_initiator(local_static, local_ephemeral, remote_pubkey);
+
+        let act_one = handshake.get_act_one()?;
+        stream.write_all(&act_one)?;
+
+        let mut act_two = [0u8; ACT_TWO_SIZE];
+        stream.read_exact(&mut act_two)?;
+
+        let act_three = handshake.process_act_two(&act_two)?;
+        stream.write_all(&act_three)?;
+
+        Ok(handshake.into_cipher()?)
+    }
+
+    /// Sends an encrypted message to the peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConnectionError::MessageTooLarge` if the message exceeds `MAX_MESSAGE_SIZE`
+    /// or an IO error if writing fails.
+    pub fn send_message(&mut self, msg: &[u8]) -> Result<(), ConnectionError> {
+        if msg.len() > MAX_MESSAGE_SIZE {
+            return Err(ConnectionError::MessageTooLarge(msg.len()));
+        }
+        let encrypted = self.cipher.encrypt(msg);
+        self.stream.write_all(&encrypted)?;
+        Ok(())
+    }
+
+    /// Receives and decrypts a message from the peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an IO error if reading fails, or a Noise error if decryption fails.
+    pub fn recv_message(&mut self) -> Result<Vec<u8>, ConnectionError> {
+        // Read and decrypt length prefix
+        let mut encrypted_len = [0u8; ENCRYPTED_LENGTH_SIZE];
+        self.stream.read_exact(&mut encrypted_len)?;
+        let msg_len = self.cipher.decrypt_length(&encrypted_len)?;
+
+        // Read and decrypt message body
+        let encrypted_msg_len = usize::from(msg_len) + MAC_SIZE;
+        let mut encrypted_msg = vec![0u8; encrypted_msg_len];
+        self.stream.read_exact(&mut encrypted_msg)?;
+        let msg = self.cipher.decrypt_message(&encrypted_msg)?;
+
+        Ok(msg)
+    }
+}
+
+/// Errors that can occur during connection operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectionError {
+    /// IO error (connection, read, write)
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    /// Noise protocol error (handshake, decryption)
+    #[error("Noise error: {0}")]
+    Noise(#[from] NoiseError),
+    /// Message exceeds `MAX_MESSAGE_SIZE`
+    #[error("message too large: {0} bytes (max {max})", max = MAX_MESSAGE_SIZE)]
+    MessageTooLarge(usize),
+}

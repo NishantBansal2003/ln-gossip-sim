@@ -28,6 +28,11 @@ pub struct BitcoindClient {
 impl BitcoindClient {
     /// Connect to bitcoind, verify regtest, and ensure the
     /// `ln-gossip-sim` wallet exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the RPC connection fails, the chain is not regtest,
+    /// or wallet creation fails.
     pub fn new(url: &str, user: &str, pass: &str) -> Result<Self, Error> {
         let auth = Auth::UserPass(user.to_string(), pass.to_string());
 
@@ -73,15 +78,13 @@ impl BitcoindClient {
     pub fn best_block_hash(&self) -> String {
         self.client
             .best_block_hash()
-            .map(|h| h.to_string())
-            .unwrap_or_else(|_| "unknown".to_string())
+            .map_or_else(|_| "unknown".to_string(), |h| h.to_string())
     }
 
     pub fn balance(&self) -> String {
         self.client
             .get_balance()
-            .map(|b| b.0.to_string())
-            .unwrap_or_else(|_| "0 BTC".to_string())
+            .map_or_else(|_| "0 BTC".to_string(), |b| b.0.to_string())
     }
 
     pub fn mine(&self, blocks: usize) -> String {
@@ -93,8 +96,12 @@ impl BitcoindClient {
 
     /// Create a fresh 2-of-2 P2WSH address from two random keys.
     /// Returns `FundingKeys` with the address, secret keys, and public keys
-    /// (sorted lexicographically per BOLT #3).
+    /// (sorted lexicographically per BOLT 3).
     /// Keys are imported with private keys so the wallet fully owns the output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if descriptor creation, address derivation, or import fails.
     pub fn new_funding_address(&self) -> Result<FundingKeys, Error> {
         let secp = Secp256k1::new();
         let (sk1, _) = secp.generate_keypair(&mut rand::thread_rng());

@@ -1,0 +1,12 @@
+[package]
+name = "bolt"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bitcoin = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,32 @@
+[package]
+name = "ln-gossip-sim"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bolt = { workspace = true }
+noise = { workspace = true }
+bitcoin = { workspace = true }
+hex = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+corepc-client = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+[[bin]]
+name = "ln-gossip-simd"
+path = "src/bin/simd.rs"
+
+[[bin]]
+name = "ln-gossip-sim-cli"
+path = "src/bin/cli.rs"
+
+[lib]
+name = "ln_gossip_sim"
+path = "src/lib.rs"

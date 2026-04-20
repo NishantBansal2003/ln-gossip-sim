@@ -52,12 +52,9 @@ fn main() {
         Command::Stop => "stop".to_string(),
     };
 
-    let mut stream = match UnixStream::connect(SOCK_PATH) {
-        Ok(s) => s,
-        Err(_) => {
-            eprintln!("Cannot connect to daemon. Is ln-gossip-simd running?");
-            std::process::exit(1);
-        }
+    let Ok(mut stream) = UnixStream::connect(SOCK_PATH) else {
+        eprintln!("Cannot connect to daemon. Is ln-gossip-simd running?");
+        std::process::exit(1);
     };
 
     if let Err(e) = stream.write_all(cmd.as_bytes()) {
@@ -69,7 +66,7 @@ fn main() {
 
     for line in BufReader::new(&stream).lines() {
         match line {
-            Ok(l) => println!("{}", l),
+            Ok(l) => println!("{l}"),
             Err(_) => break,
         }
     }
