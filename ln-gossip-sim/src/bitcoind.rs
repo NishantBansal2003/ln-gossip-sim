@@ -209,33 +209,49 @@ impl BitcoindClient {
             .as_u64()
             .ok_or_else(|| Error::Rpc("block has no height".into()))?;
 
-        // Coinbase is always tx_index 0. Find the output that pays to our
-        // funding address (on regtest with segwit, output 0 is the witness
-        // commitment OP_RETURN, so the actual payout may be at index 1+).
-        let coinbase_txid = block["tx"][0]
-            .as_str()
-            .ok_or_else(|| Error::Rpc("block has no coinbase txid".into()))?;
-        let coinbase: serde_json::Value = self
-            .client
-            .call(
-                "getrawtransaction",
-                &[
-                    serde_json::Value::String(coinbase_txid.to_string()),
-                    serde_json::json!(true),
-                    serde_json::Value::String(first_hash),
-                ],
-            )
-            .map_err(|e| Error::Rpc(e.to_string()))?;
-        let vout = coinbase["vout"]
+        // Search all transactions in the block for the funding output.
+        let txids = block["tx"]
             .as_array()
-            .ok_or_else(|| Error::Rpc("coinbase has no vout".into()))?;
+            .ok_or_else(|| Error::Rpc("block has no tx array".into()))?;
         let addr_str = funding.address.to_string();
-        let output_index = vout
-            .iter()
-            .position(|o| o["scriptPubKey"]["address"].as_str() == Some(&addr_str))
-            .ok_or_else(|| Error::Rpc("funding output not found in coinbase".into()))?;
+        let mut found_tx_index = None;
+        let mut found_output_index = None;
 
-        let scid = (block_height << 40) | (output_index as u64);
+        for (ti, txid_val) in txids.iter().enumerate() {
+            let txid = txid_val
+                .as_str()
+                .ok_or_else(|| Error::Rpc("txid is not a string".into()))?;
+            let tx: serde_json::Value = self
+                .client
+                .call(
+                    "getrawtransaction",
+                    &[
+                        serde_json::Value::String(txid.to_string()),
+                        serde_json::json!(true),
+                        serde_json::Value::String(first_hash.clone()),
+                    ],
+                )
+                .map_err(|e| Error::Rpc(e.to_string()))?;
+            let vout = tx["vout"]
+                .as_array()
+                .ok_or_else(|| Error::Rpc("tx has no vout".into()))?;
+            if let Some(oi) = vout
+                .iter()
+                .position(|o| o["scriptPubKey"]["address"].as_str() == Some(&addr_str))
+            {
+                found_tx_index = Some(ti as u64);
+                found_output_index = Some(oi as u64);
+                break;
+            }
+        }
+
+        let tx_index =
+            found_tx_index.ok_or_else(|| Error::Rpc("funding output not found in block".into()))?;
+        let output_index = found_output_index
+            .ok_or_else(|| Error::Rpc("funding output not found in block".into()))?;
+
+        // BOLT 7 SCID: block_height (24 bits) | tx_index (24 bits) | output_index (16 bits)
+        let scid = (block_height << 40) | (tx_index << 16) | output_index;
 
         let msg = format!("Mined {} block(s) to {}\n", r.0.len(), funding.address);
 
