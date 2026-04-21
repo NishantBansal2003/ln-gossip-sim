@@ -4,6 +4,16 @@ Lightning Network gossip simulator for regtest. Connects to LN nodes over the
 Bolt 8 Noise protocol, exchanges init/ping/pong messages, and talks to bitcoind
 via RPC.
 
+## Requirements
+
+This project was built and tested with the following setup:
+
+- **Rust:** 1.95.0 (stable). Older versions may work but are not tested.
+- **Bitcoin Core:** v30.0 on regtest. Other recent versions should work, but
+  are not tested.
+- **Lightning node:** tested with CLN, LND, and Eclair built from their
+  respective `master` branches.
+
 ## Build
 
 ```
