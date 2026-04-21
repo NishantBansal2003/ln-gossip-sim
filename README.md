@@ -47,7 +47,7 @@ ln-gossip-sim-cli disconnect <pubkey_hex>
 ln-gossip-sim-cli mine <blocks>
 
 # Send a channel_announcement to a connected peer
-ln-gossip-sim-cli sendchannelannouncement <pubkey_hex>
+ln-gossip-sim-cli send-channel-announcement <pubkey_hex>
 
 # Stop the daemon
 ln-gossip-sim-cli stop
