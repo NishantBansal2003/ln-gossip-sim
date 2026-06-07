@@ -1,6 +1,7 @@
 //! BOLT message encoding and decoding.
 
 pub mod channel_announcement;
+pub mod channel_update;
 pub mod error;
 pub mod init;
 pub mod ping;
@@ -11,6 +12,7 @@ pub mod warning;
 pub mod wire;
 
 pub use channel_announcement::ChannelAnnouncement;
+pub use channel_update::ChannelUpdate;
 pub use error::Error;
 pub use init::{Init, InitTlvs};
 pub use ping::Ping;
