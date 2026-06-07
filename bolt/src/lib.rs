@@ -6,6 +6,8 @@ pub mod error;
 pub mod init;
 pub mod ping;
 pub mod pong;
+pub mod query_channel_range;
+pub mod reply_channel_range;
 pub mod tlv;
 pub mod types;
 pub mod warning;
@@ -17,6 +19,8 @@ pub use error::Error;
 pub use init::{Init, InitTlvs};
 pub use ping::Ping;
 pub use pong::Pong;
+pub use query_channel_range::QueryChannelRange;
+pub use reply_channel_range::{ReplyChannelRange, ReplyChannelRangeTlvs};
 pub use tlv::{TlvRecord, TlvStream};
 pub use types::{
     BigSize, CHAIN_HASH_SIZE, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE,
@@ -36,6 +40,8 @@ pub enum BoltError {
     InvalidPublicKey([u8; PUBLIC_KEY_SIZE]),
     #[error("INVALID_SIGNATURE {}", hex::encode(.0))]
     InvalidSignature([u8; COMPACT_SIGNATURE_SIZE]),
+    #[error("UNKNOWN_ENCODING {0}")]
+    UnknownEncoding(u8),
     #[error("BIGSIZE_NOT_MINIMAL")]
     BigSizeNotMinimal,
     #[error("BIGSIZE_TRUNCATED")]
@@ -57,6 +63,8 @@ pub mod msg_type {
     pub const PONG: u16 = 19;
     pub const CHANNEL_ANNOUNCEMENT: u16 = 256;
     pub const CHANNEL_UPDATE: u16 = 258;
+    pub const QUERY_CHANNEL_RANGE: u16 = 263;
+    pub const REPLY_CHANNEL_RANGE: u16 = 264;
 }
 
 /// A decoded BOLT message.
@@ -69,6 +77,8 @@ pub enum Message {
     Pong(Pong),
     ChannelAnnouncement(Box<ChannelAnnouncement>),
     ChannelUpdate(Box<ChannelUpdate>),
+    QueryChannelRange(QueryChannelRange),
+    ReplyChannelRange(Box<ReplyChannelRange>),
     /// Unknown message type (odd types accepted, even rejected).
     Unknown {
         msg_type: u16,
@@ -88,6 +98,8 @@ impl Message {
             Self::Pong(_) => msg_type::PONG,
             Self::ChannelAnnouncement(_) => msg_type::CHANNEL_ANNOUNCEMENT,
             Self::ChannelUpdate(_) => msg_type::CHANNEL_UPDATE,
+            Self::QueryChannelRange(_) => msg_type::QUERY_CHANNEL_RANGE,
+            Self::ReplyChannelRange(_) => msg_type::REPLY_CHANNEL_RANGE,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
     }
@@ -105,6 +117,8 @@ impl Message {
             Self::Pong(m) => out.extend(m.encode()),
             Self::ChannelAnnouncement(m) => out.extend(m.encode()),
             Self::ChannelUpdate(m) => out.extend(m.encode()),
+            Self::QueryChannelRange(m) => out.extend(m.encode()),
+            Self::ReplyChannelRange(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
         out
@@ -131,6 +145,12 @@ impl Message {
             msg_type::CHANNEL_UPDATE => Ok(Self::ChannelUpdate(Box::new(ChannelUpdate::decode(
                 cursor,
             )?))),
+            msg_type::QUERY_CHANNEL_RANGE => {
+                Ok(Self::QueryChannelRange(QueryChannelRange::decode(cursor)?))
+            }
+            msg_type::REPLY_CHANNEL_RANGE => Ok(Self::ReplyChannelRange(Box::new(
+                ReplyChannelRange::decode(cursor)?,
+            ))),
             _ => {
                 if msg_type % 2 == 0 {
                     Err(BoltError::UnknownEvenType(msg_type))
@@ -205,6 +225,37 @@ mod tests {
         let msg = Message::ChannelUpdate(Box::new(update));
         let encoded = msg.encode();
         assert_eq!(encoded[0..2], msg_type::CHANNEL_UPDATE.to_be_bytes());
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn message_query_channel_range_roundtrip() {
+        let query = QueryChannelRange {
+            chain_hash: [0xab; 32],
+            first_blocknum: 500_000,
+            number_of_blocks: 1_000,
+            query_option: Some(query_channel_range::QUERY_OPTION_WANT_TIMESTAMPS),
+        };
+        let msg = Message::QueryChannelRange(query);
+        let encoded = msg.encode();
+        assert_eq!(encoded[0..2], msg_type::QUERY_CHANNEL_RANGE.to_be_bytes());
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn message_reply_channel_range_roundtrip() {
+        let reply = ReplyChannelRange::from_scids(
+            [0xab; 32],
+            500_000,
+            1_000,
+            true,
+            &[(500_000 << 40) | (1 << 16)],
+        );
+        let msg = Message::ReplyChannelRange(Box::new(reply));
+        let encoded = msg.encode();
+        assert_eq!(encoded[0..2], msg_type::REPLY_CHANNEL_RANGE.to_be_bytes());
         let decoded = Message::decode(&encoded).unwrap();
         assert_eq!(decoded, msg);
     }
