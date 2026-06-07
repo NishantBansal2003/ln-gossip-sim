@@ -189,8 +189,7 @@ mod tests {
     #[test]
     fn from_scids_sets_sync_complete() {
         assert_eq!(sample().sync_complete, 1);
-        let incomplete =
-            ReplyChannelRange::from_scids(BITCOIN_MAINNET, 0, 10, false, &SCIDS);
+        let incomplete = ReplyChannelRange::from_scids(BITCOIN_MAINNET, 0, 10, false, &SCIDS);
         assert_eq!(incomplete.sync_complete, 0);
     }
 

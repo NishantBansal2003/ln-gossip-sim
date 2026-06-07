@@ -39,6 +39,76 @@ fn parse_scid(s: &str) -> Option<u64> {
     Some((block << 40) | (tx_index << 16) | output)
 }
 
+/// Handles a single inbound message from a peer, sending any response it
+/// requires. Returns `false` if the connection should be torn down (e.g. a
+/// send failed).
+async fn handle_peer_message(
+    peer_id: &PublicKey,
+    writer: &Arc<Mutex<NoiseWriter>>,
+    raw: &[u8],
+) -> bool {
+    match Message::decode(raw) {
+        Ok(Message::Ping(ping)) => {
+            log::info!("Received Ping from {peer_id}");
+            let resp = Message::Pong(bolt::Pong::respond_to(&ping));
+            if let Err(e) = writer.lock().await.send(&resp.encode()).await {
+                log::error!("Peer {peer_id} pong error: {e}");
+                return false;
+            }
+            log::info!("Sent Pong to {peer_id}");
+        }
+        Ok(Message::Pong(_)) => {
+            log::info!("Received Pong from {peer_id}");
+        }
+        Ok(Message::Warning(_)) => {
+            log::info!("Received Warning from {peer_id}");
+        }
+        Ok(Message::ChannelAnnouncement(ann)) => {
+            log::info!(
+                "Received channel_announcement scid={} from {peer_id}",
+                ann.scid_str()
+            );
+        }
+        Ok(Message::ChannelUpdate(upd)) => {
+            log::info!(
+                "Received channel_update scid={} from {peer_id}",
+                upd.scid_str()
+            );
+        }
+        Ok(Message::QueryChannelRange(query)) => {
+            log::info!(
+                "Received query_channel_range first_blocknum={} number_of_blocks={} from {peer_id}",
+                query.first_blocknum,
+                query.number_of_blocks
+            );
+            // We know no channels: reply covering the full requested range
+            // with an empty SCID list and sync_complete set, so the peer sees
+            // the range as fully answered.
+            let reply = bolt::ReplyChannelRange::from_scids(
+                query.chain_hash,
+                query.first_blocknum,
+                query.number_of_blocks,
+                true,
+                &[],
+            );
+            let resp = Message::ReplyChannelRange(Box::new(reply));
+            if let Err(e) = writer.lock().await.send(&resp.encode()).await {
+                log::error!("Peer {peer_id} reply_channel_range error: {e}");
+                return false;
+            }
+            log::info!("Sent reply_channel_range (0 scids) to {peer_id}");
+        }
+        Ok(msg) => {
+            log::info!("Received msg type {} from {peer_id}", msg.msg_type());
+        }
+        Err(_) => {
+            let mt = u16::from_be_bytes([raw[0], raw[1]]);
+            log::info!("Received unknown msg type {mt} from {peer_id}");
+        }
+    }
+    true
+}
+
 struct Peer {
     #[allow(dead_code)] // Used when sending gossip/announcement messages.
     writer: Arc<Mutex<NoiseWriter>>,
@@ -125,41 +195,8 @@ impl Daemon {
                                     log::error!("Peer {peer_id}: message too short");
                                     break;
                                 }
-                                match Message::decode(&raw) {
-                                    Ok(Message::Ping(ping)) => {
-                                        log::info!("Received Ping from {peer_id}");
-                                        let resp = Message::Pong(bolt::Pong::respond_to(&ping));
-                                        if let Err(e) = ping_writer.lock().await.send(&resp.encode()).await {
-                                            log::error!("Peer {peer_id} pong error: {e}");
-                                            break;
-                                        }
-                                        log::info!("Sent Pong to {peer_id}");
-                                    }
-                                    Ok(Message::Pong(_)) => {
-                                        log::info!("Received Pong from {peer_id}");
-                                    }
-                                    Ok(Message::Warning(_)) => {
-                                        log::info!("Received Warning from {peer_id}");
-                                    }
-                                    Ok(Message::ChannelAnnouncement(ann)) => {
-                                        log::info!(
-                                            "Received channel_announcement scid={} from {peer_id}",
-                                            ann.scid_str()
-                                        );
-                                    }
-                                    Ok(Message::ChannelUpdate(upd)) => {
-                                        log::info!(
-                                            "Received channel_update scid={} from {peer_id}",
-                                            upd.scid_str()
-                                        );
-                                    }
-                                    Ok(msg) => {
-                                        log::info!("Received msg type {} from {peer_id}", msg.msg_type());
-                                    }
-                                    Err(_) => {
-                                        let mt = u16::from_be_bytes([raw[0], raw[1]]);
-                                        log::info!("Received unknown msg type {mt} from {peer_id}");
-                                    }
+                                if !handle_peer_message(&peer_id, &ping_writer, &raw).await {
+                                    break;
                                 }
                             }
                             Err(e) => {
