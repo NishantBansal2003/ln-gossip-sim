@@ -46,8 +46,11 @@ ln-gossip-sim-cli disconnect <pubkey_hex>
 # Mine blocks to a 2-of-2 P2WSH address (LN-like funding output)
 ln-gossip-sim-cli mine <blocks>
 
-# Send a channel_announcement to a connected peer
+# Send a channel_announcement to a connected peer (same node ID on both sides)
 ln-gossip-sim-cli send-channel-announcement <pubkey_hex>
+
+# Send a channel_announcement with two distinct node IDs
+ln-gossip-sim-cli send-channel-announcement-2 <pubkey_hex>
 
 # Stop the daemon
 ln-gossip-sim-cli stop

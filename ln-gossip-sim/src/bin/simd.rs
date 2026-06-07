@@ -64,6 +64,7 @@ impl Daemon {
             Some("connect") => self.cmd_connect(&parts).await,
             Some("disconnect") => self.cmd_disconnect(&parts).await,
             Some("sendchannelannouncement") => self.cmd_send_channel_announcement(&parts).await,
+            Some("sendchannelannouncement2") => self.cmd_send_channel_announcement_2(&parts).await,
             Some("peers") => self.cmd_peers().await,
             Some("info") => self.cmd_info().await,
             Some("mine") => self.cmd_mine(&parts).await,
@@ -245,6 +246,75 @@ impl Daemon {
         );
         format!(
             "Sent channel_announcement scid={} to {peer_pubkey}\n",
+            ann.scid_str()
+        )
+    }
+
+    async fn cmd_send_channel_announcement_2(&self, parts: &[&str]) -> String {
+        if parts.len() != 2 {
+            return "Usage: sendchannelannouncement2 <pubkey_hex>\n".to_string();
+        }
+        let Some(peer_pubkey) = hex::decode(parts[1])
+            .ok()
+            .and_then(|b| PublicKey::from_slice(&b).ok())
+        else {
+            return "Invalid pubkey\n".to_string();
+        };
+
+        // Check if peer is connected.
+        let writer = {
+            let peers = self.peers.lock().await;
+            let Some(peer) = peers.get(&peer_pubkey) else {
+                return format!("Not connected to {peer_pubkey}\n");
+            };
+            Arc::clone(&peer.writer)
+        };
+
+        // Mine 6 blocks to a fresh 2-of-2 P2WSH funding address.
+        let btc = Arc::clone(&self.bitcoind);
+        let fund_result = tokio::task::spawn_blocking(move || btc.mine_to_funding(6)).await;
+        let (_, funding, scid) = match fund_result {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => return format!("Funding failed: {e}\n"),
+            Err(e) => return format!("Task failed: {e}\n"),
+        };
+
+        // node_id_1 and node_id_2 are two distinct node identities. BOLT 7
+        // requires node_id_1 < node_id_2 lexicographically, so order the two
+        // node secrets by their public keys.
+        let secp = bitcoin::secp256k1::Secp256k1::signing_only();
+        let sk_a = keys::node_secret();
+        let sk_b = keys::node_secret_2();
+        let (node_sk_1, node_sk_2) = if PublicKey::from_secret_key(&secp, &sk_a)
+            < PublicKey::from_secret_key(&secp, &sk_b)
+        {
+            (sk_a, sk_b)
+        } else {
+            (sk_b, sk_a)
+        };
+        let (bitcoin_sk_1, bitcoin_sk_2) = (funding.sk1, funding.sk2);
+
+        let ann = ChannelAnnouncement::new_signed(
+            Vec::new(),
+            REGTEST_CHAIN_HASH,
+            scid,
+            &node_sk_1,
+            &node_sk_2,
+            &bitcoin_sk_1,
+            &bitcoin_sk_2,
+        );
+
+        let msg = Message::ChannelAnnouncement(Box::new(ann.clone()));
+        if let Err(e) = writer.lock().await.send(&msg.encode()).await {
+            return format!("Send failed: {e}\n");
+        }
+
+        log::info!(
+            "Sent channel_announcement (distinct node IDs) scid={} to {peer_pubkey}",
+            ann.scid_str()
+        );
+        format!(
+            "Sent channel_announcement (distinct node IDs) scid={} to {peer_pubkey}\n",
             ann.scid_str()
         )
     }
