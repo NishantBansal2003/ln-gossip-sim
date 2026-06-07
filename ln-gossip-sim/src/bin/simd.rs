@@ -1,5 +1,5 @@
 use bitcoin::secp256k1::PublicKey;
-use bolt::{ChannelAnnouncement, Message, Ping};
+use bolt::{ChannelAnnouncement, ChannelUpdate, Message, Ping};
 use clap::Parser;
 use ln_gossip_sim::bitcoind::{BitcoindClient, REGTEST_CHAIN_HASH};
 use ln_gossip_sim::conn::{self, NoiseWriter};
@@ -24,6 +24,19 @@ struct Args {
     rpc_user: String,
     #[arg(long)]
     rpc_pass: String,
+}
+
+/// Parses a short channel ID in `block x tx_index x output` form (as printed
+/// by send-channel-announcement) into its compact `u64` encoding.
+fn parse_scid(s: &str) -> Option<u64> {
+    let mut fields = s.split('x');
+    let block: u64 = fields.next()?.parse().ok()?;
+    let tx_index: u64 = fields.next()?.parse().ok()?;
+    let output: u64 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() || block > 0xFF_FFFF || tx_index > 0xFF_FFFF || output > 0xFFFF {
+        return None;
+    }
+    Some((block << 40) | (tx_index << 16) | output)
 }
 
 struct Peer {
@@ -65,6 +78,7 @@ impl Daemon {
             Some("disconnect") => self.cmd_disconnect(&parts).await,
             Some("sendchannelannouncement") => self.cmd_send_channel_announcement(&parts).await,
             Some("sendchannelannouncement2") => self.cmd_send_channel_announcement_2(&parts).await,
+            Some("sendchannelupdate") => self.cmd_send_channel_update(&parts).await,
             Some("peers") => self.cmd_peers().await,
             Some("info") => self.cmd_info().await,
             Some("mine") => self.cmd_mine(&parts).await,
@@ -131,6 +145,12 @@ impl Daemon {
                                         log::info!(
                                             "Received channel_announcement scid={} from {peer_id}",
                                             ann.scid_str()
+                                        );
+                                    }
+                                    Ok(Message::ChannelUpdate(upd)) => {
+                                        log::info!(
+                                            "Received channel_update scid={} from {peer_id}",
+                                            upd.scid_str()
                                         );
                                     }
                                     Ok(msg) => {
@@ -316,6 +336,79 @@ impl Daemon {
         format!(
             "Sent channel_announcement (distinct node IDs) scid={} to {peer_pubkey}\n",
             ann.scid_str()
+        )
+    }
+
+    async fn cmd_send_channel_update(&self, parts: &[&str]) -> String {
+        if parts.len() != 3 {
+            return "Usage: sendchannelupdate <pubkey_hex> <scid>\n".to_string();
+        }
+        let Some(peer_pubkey) = hex::decode(parts[1])
+            .ok()
+            .and_then(|b| PublicKey::from_slice(&b).ok())
+        else {
+            return "Invalid pubkey\n".to_string();
+        };
+        // scid as printed by send-channel-announcement, e.g. "539268x845x1".
+        let Some(scid) = parse_scid(parts[2]) else {
+            return "Invalid scid (expected block x tx x output)\n".to_string();
+        };
+
+        // Check if peer is connected.
+        let writer = {
+            let peers = self.peers.lock().await;
+            let Some(peer) = peers.get(&peer_pubkey) else {
+                return format!("Not connected to {peer_pubkey}\n");
+            };
+            Arc::clone(&peer.writer)
+        };
+
+        // Update the channel announced by send-channel-announcement-2, which
+        // uses two distinct node IDs ordered so node_id_1 < node_id_2. The
+        // channel_flags direction bit is 0, so this update belongs to node_id_1
+        // and must be signed by that node's key.
+        let secp = bitcoin::secp256k1::Secp256k1::signing_only();
+        let sk_a = keys::node_secret();
+        let sk_b = keys::node_secret_2();
+        let node_sk_1 = if PublicKey::from_secret_key(&secp, &sk_a)
+            < PublicKey::from_secret_key(&secp, &sk_b)
+        {
+            sk_a
+        } else {
+            sk_b
+        };
+
+        // Forwarding policy with conservative defaults accepted by CLN, LND,
+        // and Eclair:
+        //   message_flags = 1  -> bit 0 set: htlc_maximum_msat is present (required).
+        //   channel_flags = 0  -> direction node_id_1, channel enabled.
+        // timestamp = 0 to exercise the zero-timestamp edge case.
+        let update = ChannelUpdate::new_signed(
+            REGTEST_CHAIN_HASH,
+            scid,
+            0,             // timestamp
+            1,             // message_flags
+            0,             // channel_flags
+            40,            // cltv_expiry_delta
+            1,             // htlc_minimum_msat
+            1_000,         // fee_base_msat
+            1,             // fee_proportional_millionths
+            4_294_967_295, // htlc_maximum_msat
+            &node_sk_1,
+        );
+
+        let msg = Message::ChannelUpdate(Box::new(update.clone()));
+        if let Err(e) = writer.lock().await.send(&msg.encode()).await {
+            return format!("Send failed: {e}\n");
+        }
+
+        log::info!(
+            "Sent channel_update scid={} to {peer_pubkey}",
+            update.scid_str()
+        );
+        format!(
+            "Sent channel_update scid={} to {peer_pubkey}\n",
+            update.scid_str()
         )
     }
 

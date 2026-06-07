@@ -52,6 +52,10 @@ ln-gossip-sim-cli send-channel-announcement <pubkey_hex>
 # Send a channel_announcement with two distinct node IDs
 ln-gossip-sim-cli send-channel-announcement-2 <pubkey_hex>
 
+# Send a channel_update for an announced channel (scid as printed by
+# send-channel-announcement, e.g. 539268x845x1) to a connected peer
+ln-gossip-sim-cli send-channel-update <pubkey_hex> <scid>
+
 # Stop the daemon
 ln-gossip-sim-cli stop
 ```

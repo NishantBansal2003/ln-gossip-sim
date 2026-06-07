@@ -56,6 +56,7 @@ pub mod msg_type {
     pub const PING: u16 = 18;
     pub const PONG: u16 = 19;
     pub const CHANNEL_ANNOUNCEMENT: u16 = 256;
+    pub const CHANNEL_UPDATE: u16 = 258;
 }
 
 /// A decoded BOLT message.
@@ -67,6 +68,7 @@ pub enum Message {
     Ping(Ping),
     Pong(Pong),
     ChannelAnnouncement(Box<ChannelAnnouncement>),
+    ChannelUpdate(Box<ChannelUpdate>),
     /// Unknown message type (odd types accepted, even rejected).
     Unknown {
         msg_type: u16,
@@ -85,6 +87,7 @@ impl Message {
             Self::Ping(_) => msg_type::PING,
             Self::Pong(_) => msg_type::PONG,
             Self::ChannelAnnouncement(_) => msg_type::CHANNEL_ANNOUNCEMENT,
+            Self::ChannelUpdate(_) => msg_type::CHANNEL_UPDATE,
             Self::Unknown { msg_type, .. } => *msg_type,
         }
     }
@@ -101,6 +104,7 @@ impl Message {
             Self::Ping(m) => out.extend(m.encode()),
             Self::Pong(m) => out.extend(m.encode()),
             Self::ChannelAnnouncement(m) => out.extend(m.encode()),
+            Self::ChannelUpdate(m) => out.extend(m.encode()),
             Self::Unknown { payload, .. } => out.extend(payload),
         }
         out
@@ -124,6 +128,9 @@ impl Message {
             msg_type::CHANNEL_ANNOUNCEMENT => Ok(Self::ChannelAnnouncement(Box::new(
                 ChannelAnnouncement::decode(cursor)?,
             ))),
+            msg_type::CHANNEL_UPDATE => Ok(Self::ChannelUpdate(Box::new(ChannelUpdate::decode(
+                cursor,
+            )?))),
             _ => {
                 if msg_type % 2 == 0 {
                     Err(BoltError::UnknownEvenType(msg_type))
@@ -176,6 +183,30 @@ mod tests {
         let encoded = msg.encode();
         let decoded = Message::decode(&encoded).unwrap();
         assert_eq!(decoded, Message::Pong(pong));
+    }
+
+    #[test]
+    fn message_channel_update_roundtrip() {
+        use bitcoin::secp256k1::SecretKey;
+        let sk = SecretKey::from_slice(&[0x42; 32]).unwrap();
+        let update = ChannelUpdate::new_signed(
+            [0xab; 32],
+            (539_268 << 40) | (845 << 16) | 1,
+            1_715_000_000,
+            1,
+            0,
+            40,
+            1,
+            1_000,
+            1,
+            4_294_967_295,
+            &sk,
+        );
+        let msg = Message::ChannelUpdate(Box::new(update));
+        let encoded = msg.encode();
+        assert_eq!(encoded[0..2], msg_type::CHANNEL_UPDATE.to_be_bytes());
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
     }
 
     #[test]
