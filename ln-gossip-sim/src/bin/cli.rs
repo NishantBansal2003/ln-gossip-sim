@@ -41,6 +41,18 @@ enum Command {
         /// Node public key (hex) of connected peer
         pubkey: String,
     },
+    /// Send a `channel_announcement` with two distinct node IDs to a connected peer
+    SendChannelAnnouncement2 {
+        /// Node public key (hex) of connected peer
+        pubkey: String,
+    },
+    /// Send a `channel_update` for an announced channel to a connected peer
+    SendChannelUpdate {
+        /// Node public key (hex) of connected peer
+        pubkey: String,
+        /// Short channel ID as printed by send-channel-announcement (e.g. 539268x845x1)
+        scid: String,
+    },
     /// Stop the daemon
     Stop,
 }
@@ -56,6 +68,12 @@ fn main() {
         Command::Mine { blocks } => format!("mine {blocks}"),
         Command::SendChannelAnnouncement { pubkey } => {
             format!("sendchannelannouncement {pubkey}")
+        }
+        Command::SendChannelAnnouncement2 { pubkey } => {
+            format!("sendchannelannouncement2 {pubkey}")
+        }
+        Command::SendChannelUpdate { pubkey, scid } => {
+            format!("sendchannelupdate {pubkey} {scid}")
         }
         Command::Stop => "stop".to_string(),
     };
