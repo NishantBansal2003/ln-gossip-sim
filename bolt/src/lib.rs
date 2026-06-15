@@ -4,6 +4,7 @@ pub mod channel_announcement;
 pub mod channel_update;
 pub mod error;
 pub mod init;
+pub mod open_channel;
 pub mod ping;
 pub mod pong;
 pub mod query_channel_range;
@@ -17,6 +18,7 @@ pub use channel_announcement::ChannelAnnouncement;
 pub use channel_update::ChannelUpdate;
 pub use error::Error;
 pub use init::{Init, InitTlvs};
+pub use open_channel::{OpenChannel, OpenChannelTlvs};
 pub use ping::Ping;
 pub use pong::Pong;
 pub use query_channel_range::QueryChannelRange;
@@ -61,6 +63,7 @@ pub mod msg_type {
     pub const ERROR: u16 = 17;
     pub const PING: u16 = 18;
     pub const PONG: u16 = 19;
+    pub const OPEN_CHANNEL: u16 = 32;
     pub const CHANNEL_ANNOUNCEMENT: u16 = 256;
     pub const CHANNEL_UPDATE: u16 = 258;
     pub const QUERY_CHANNEL_RANGE: u16 = 263;
@@ -75,6 +78,7 @@ pub enum Message {
     Error(Error),
     Ping(Ping),
     Pong(Pong),
+    OpenChannel(Box<OpenChannel>),
     ChannelAnnouncement(Box<ChannelAnnouncement>),
     ChannelUpdate(Box<ChannelUpdate>),
     QueryChannelRange(QueryChannelRange),
@@ -96,6 +100,7 @@ impl Message {
             Self::Error(_) => msg_type::ERROR,
             Self::Ping(_) => msg_type::PING,
             Self::Pong(_) => msg_type::PONG,
+            Self::OpenChannel(_) => msg_type::OPEN_CHANNEL,
             Self::ChannelAnnouncement(_) => msg_type::CHANNEL_ANNOUNCEMENT,
             Self::ChannelUpdate(_) => msg_type::CHANNEL_UPDATE,
             Self::QueryChannelRange(_) => msg_type::QUERY_CHANNEL_RANGE,
@@ -115,6 +120,7 @@ impl Message {
             Self::Error(m) => out.extend(m.encode()),
             Self::Ping(m) => out.extend(m.encode()),
             Self::Pong(m) => out.extend(m.encode()),
+            Self::OpenChannel(m) => out.extend(m.encode()),
             Self::ChannelAnnouncement(m) => out.extend(m.encode()),
             Self::ChannelUpdate(m) => out.extend(m.encode()),
             Self::QueryChannelRange(m) => out.extend(m.encode()),
@@ -139,6 +145,7 @@ impl Message {
             msg_type::ERROR => Ok(Self::Error(Error::decode(cursor)?)),
             msg_type::PING => Ok(Self::Ping(Ping::decode(cursor)?)),
             msg_type::PONG => Ok(Self::Pong(Pong::decode(cursor)?)),
+            msg_type::OPEN_CHANNEL => Ok(Self::OpenChannel(Box::new(OpenChannel::decode(cursor)?))),
             msg_type::CHANNEL_ANNOUNCEMENT => Ok(Self::ChannelAnnouncement(Box::new(
                 ChannelAnnouncement::decode(cursor)?,
             ))),
@@ -203,6 +210,42 @@ mod tests {
         let encoded = msg.encode();
         let decoded = Message::decode(&encoded).unwrap();
         assert_eq!(decoded, Message::Pong(pong));
+    }
+
+    #[test]
+    fn message_open_channel_roundtrip() {
+        use bitcoin::secp256k1::{Secp256k1, SecretKey};
+        let secp = Secp256k1::new();
+        let key = |b: u8| {
+            let sk = SecretKey::from_slice(&[b; 32]).unwrap();
+            bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk)
+        };
+        let open = OpenChannel {
+            chain_hash: [0xaa; CHAIN_HASH_SIZE],
+            temporary_channel_id: ChannelId::new([0xbb; 32]),
+            funding_satoshis: 100_000,
+            push_msat: 0,
+            dust_limit_satoshis: 546,
+            max_htlc_value_in_flight_msat: 100_000_000,
+            channel_reserve_satoshis: 10_000,
+            htlc_minimum_msat: 1_000,
+            feerate_per_kw: 253,
+            to_self_delay: 144,
+            max_accepted_htlcs: 483,
+            funding_pubkey: key(0x11),
+            revocation_basepoint: key(0x22),
+            payment_basepoint: key(0x33),
+            delayed_payment_basepoint: key(0x44),
+            htlc_basepoint: key(0x55),
+            first_per_commitment_point: key(0x66),
+            channel_flags: 0x01,
+            tlvs: OpenChannelTlvs::default(),
+        };
+        let msg = Message::OpenChannel(Box::new(open));
+        let encoded = msg.encode();
+        assert_eq!(encoded[0..2], msg_type::OPEN_CHANNEL.to_be_bytes());
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
     }
 
     #[test]
