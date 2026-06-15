@@ -3,6 +3,7 @@
 pub mod channel_announcement;
 pub mod channel_update;
 pub mod error;
+pub mod funding_created;
 pub mod init;
 pub mod open_channel;
 pub mod ping;
@@ -17,6 +18,7 @@ pub mod wire;
 pub use channel_announcement::ChannelAnnouncement;
 pub use channel_update::ChannelUpdate;
 pub use error::Error;
+pub use funding_created::FundingCreated;
 pub use init::{Init, InitTlvs};
 pub use open_channel::{OpenChannel, OpenChannelTlvs};
 pub use ping::Ping;
@@ -26,7 +28,7 @@ pub use reply_channel_range::{ReplyChannelRange, ReplyChannelRangeTlvs};
 pub use tlv::{TlvRecord, TlvStream};
 pub use types::{
     BigSize, CHAIN_HASH_SIZE, CHANNEL_ID_SIZE, COMPACT_SIGNATURE_SIZE, ChannelId, MAX_MESSAGE_SIZE,
-    PUBLIC_KEY_SIZE, TXID_SIZE, Txid,
+    PUBLIC_KEY_SIZE, TXID_SIZE,
 };
 pub use warning::Warning;
 pub use wire::WireFormat;
@@ -64,6 +66,7 @@ pub mod msg_type {
     pub const PING: u16 = 18;
     pub const PONG: u16 = 19;
     pub const OPEN_CHANNEL: u16 = 32;
+    pub const FUNDING_CREATED: u16 = 34;
     pub const CHANNEL_ANNOUNCEMENT: u16 = 256;
     pub const CHANNEL_UPDATE: u16 = 258;
     pub const QUERY_CHANNEL_RANGE: u16 = 263;
@@ -79,6 +82,7 @@ pub enum Message {
     Ping(Ping),
     Pong(Pong),
     OpenChannel(Box<OpenChannel>),
+    FundingCreated(Box<FundingCreated>),
     ChannelAnnouncement(Box<ChannelAnnouncement>),
     ChannelUpdate(Box<ChannelUpdate>),
     QueryChannelRange(QueryChannelRange),
@@ -101,6 +105,7 @@ impl Message {
             Self::Ping(_) => msg_type::PING,
             Self::Pong(_) => msg_type::PONG,
             Self::OpenChannel(_) => msg_type::OPEN_CHANNEL,
+            Self::FundingCreated(_) => msg_type::FUNDING_CREATED,
             Self::ChannelAnnouncement(_) => msg_type::CHANNEL_ANNOUNCEMENT,
             Self::ChannelUpdate(_) => msg_type::CHANNEL_UPDATE,
             Self::QueryChannelRange(_) => msg_type::QUERY_CHANNEL_RANGE,
@@ -121,6 +126,7 @@ impl Message {
             Self::Ping(m) => out.extend(m.encode()),
             Self::Pong(m) => out.extend(m.encode()),
             Self::OpenChannel(m) => out.extend(m.encode()),
+            Self::FundingCreated(m) => out.extend(m.encode()),
             Self::ChannelAnnouncement(m) => out.extend(m.encode()),
             Self::ChannelUpdate(m) => out.extend(m.encode()),
             Self::QueryChannelRange(m) => out.extend(m.encode()),
@@ -146,6 +152,9 @@ impl Message {
             msg_type::PING => Ok(Self::Ping(Ping::decode(cursor)?)),
             msg_type::PONG => Ok(Self::Pong(Pong::decode(cursor)?)),
             msg_type::OPEN_CHANNEL => Ok(Self::OpenChannel(Box::new(OpenChannel::decode(cursor)?))),
+            msg_type::FUNDING_CREATED => Ok(Self::FundingCreated(Box::new(
+                FundingCreated::decode(cursor)?,
+            ))),
             msg_type::CHANNEL_ANNOUNCEMENT => Ok(Self::ChannelAnnouncement(Box::new(
                 ChannelAnnouncement::decode(cursor)?,
             ))),
@@ -244,6 +253,26 @@ mod tests {
         let msg = Message::OpenChannel(Box::new(open));
         let encoded = msg.encode();
         assert_eq!(encoded[0..2], msg_type::OPEN_CHANNEL.to_be_bytes());
+        let decoded = Message::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn message_funding_created_roundtrip() {
+        use bitcoin::hashes::Hash;
+        use bitcoin::secp256k1::{Message as SecpMessage, Secp256k1, SecretKey};
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let sig = secp.sign_ecdsa(&SecpMessage::from_digest([0xaa; 32]), &sk);
+        let funding = FundingCreated {
+            temporary_channel_id: ChannelId::new([0xbb; 32]),
+            funding_txid: bitcoin::Txid::from_byte_array([0xcc; 32]),
+            funding_output_index: 0,
+            signature: sig,
+        };
+        let msg = Message::FundingCreated(Box::new(funding));
+        let encoded = msg.encode();
+        assert_eq!(encoded[0..2], msg_type::FUNDING_CREATED.to_be_bytes());
         let decoded = Message::decode(&encoded).unwrap();
         assert_eq!(decoded, msg);
     }
