@@ -8,5 +8,6 @@ pub mod log;
 pub use bolt;
 pub use noise;
 
-/// Unix socket path for daemon-to-CLI communication.
+/// Unix socket path for daemon-to-CLI communication. A single daemon hosts
+/// every node identity; the CLI selects one per command via `--node-index`.
 pub const SOCK_PATH: &str = "/tmp/ln-gossip-sim.sock";
