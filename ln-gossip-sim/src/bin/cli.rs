@@ -58,6 +58,13 @@ enum Command {
         /// Node public key (hex) of connected peer
         pubkey: String,
     },
+    /// Decode a type-prefixed hex message and send it to a connected peer
+    SendMessage {
+        /// Node public key (hex) of connected peer
+        pubkey: String,
+        /// Wire message as hex (with 2-byte type prefix)
+        message: String,
+    },
     /// Stop the daemon
     Stop,
 }
@@ -82,6 +89,9 @@ fn main() {
         }
         Command::SendNodeAnnouncement { pubkey } => {
             format!("sendnodeannouncement {pubkey}")
+        }
+        Command::SendMessage { pubkey, message } => {
+            format!("sendmessage {pubkey} {message}")
         }
         Command::Stop => "stop".to_string(),
     };

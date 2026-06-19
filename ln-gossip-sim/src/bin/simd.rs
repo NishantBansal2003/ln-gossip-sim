@@ -156,6 +156,7 @@ impl Daemon {
             Some("sendchannelannouncement2") => self.cmd_send_channel_announcement_2(&parts).await,
             Some("sendchannelupdate") => self.cmd_send_channel_update(&parts).await,
             Some("sendnodeannouncement") => self.cmd_send_node_announcement(&parts).await,
+            Some("sendmessage") => self.cmd_send_message(&parts).await,
             Some("peers") => self.cmd_peers().await,
             Some("info") => self.cmd_info().await,
             Some("mine") => self.cmd_mine(&parts).await,
@@ -506,6 +507,57 @@ impl Daemon {
             "Sent node_announcement node_id={} to {peer_pubkey}\n",
             ann.node_id
         )
+    }
+
+    /// Decodes a caller-supplied type-prefixed hex message and forwards it to a
+    /// connected peer. The message is decoded (and thus validated) before being
+    /// re-encoded and sent. Messages whose type has no codec are rejected with
+    /// an "unknown message type" error so the caller knows to add one.
+    async fn cmd_send_message(&self, parts: &[&str]) -> String {
+        if parts.len() != 3 {
+            return "Usage: sendmessage <pubkey_hex> <message_hex>\n".to_string();
+        }
+        let Some(peer_pubkey) = hex::decode(parts[1])
+            .ok()
+            .and_then(|b| PublicKey::from_slice(&b).ok())
+        else {
+            return "Invalid pubkey\n".to_string();
+        };
+        let Ok(bytes) = hex::decode(parts[2]) else {
+            return "Invalid message hex\n".to_string();
+        };
+
+        // Decode (and validate) the message before sending. Unknown types have
+        // no codec yet: an unknown even type fails to decode, while an unknown
+        // odd type decodes to `Message::Unknown`. Reject both so the caller adds
+        // the corresponding codec rather than sending an unparsed blob.
+        let wire = match Message::decode(&bytes) {
+            Ok(Message::Unknown { msg_type, .. })
+            | Err(bolt::BoltError::UnknownEvenType(msg_type)) => {
+                return format!(
+                    "Unknown message type {msg_type}: add the corresponding codec for it\n"
+                );
+            }
+            Ok(msg) => msg.encode(),
+            Err(e) => return format!("Decode failed: {e}\n"),
+        };
+
+        // Check the peer is connected, grabbing its writer.
+        let writer = {
+            let peers = self.peers.lock().await;
+            let Some(peer) = peers.get(&peer_pubkey) else {
+                return format!("Not connected to {peer_pubkey}\n");
+            };
+            Arc::clone(&peer.writer)
+        };
+
+        if let Err(e) = writer.lock().await.send(&wire).await {
+            return format!("Send failed: {e}\n");
+        }
+
+        let msg_type = u16::from_be_bytes([wire[0], wire[1]]);
+        log::info!("Sent message type {msg_type} to {peer_pubkey}");
+        format!("Sent message type {msg_type} to {peer_pubkey}\n")
     }
 
     async fn cmd_peers(&self) -> String {

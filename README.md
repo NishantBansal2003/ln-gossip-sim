@@ -61,6 +61,10 @@ ln-gossip-sim-cli send-channel-update <pubkey_hex> <scid>
 # whose node_id already appears in a previously announced channel.
 ln-gossip-sim-cli send-node-announcement <pubkey_hex>
 
+# Decode a type-prefixed hex message and send it to a connected peer. The
+# message type must have a codec; unknown types are rejected.
+ln-gossip-sim-cli send-message <pubkey_hex> <message_hex>
+
 # Stop the daemon
 ln-gossip-sim-cli stop
 ```
