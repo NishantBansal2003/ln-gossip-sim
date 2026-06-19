@@ -5,6 +5,7 @@ pub mod channel_update;
 pub mod error;
 pub mod funding_created;
 pub mod init;
+pub mod node_announcement;
 pub mod open_channel;
 pub mod ping;
 pub mod pong;
@@ -20,6 +21,7 @@ pub use channel_update::ChannelUpdate;
 pub use error::Error;
 pub use funding_created::FundingCreated;
 pub use init::{Init, InitTlvs};
+pub use node_announcement::NodeAnnouncement;
 pub use open_channel::{OpenChannel, OpenChannelTlvs};
 pub use ping::Ping;
 pub use pong::Pong;
@@ -68,6 +70,7 @@ pub mod msg_type {
     pub const OPEN_CHANNEL: u16 = 32;
     pub const FUNDING_CREATED: u16 = 34;
     pub const CHANNEL_ANNOUNCEMENT: u16 = 256;
+    pub const NODE_ANNOUNCEMENT: u16 = 257;
     pub const CHANNEL_UPDATE: u16 = 258;
     pub const QUERY_CHANNEL_RANGE: u16 = 263;
     pub const REPLY_CHANNEL_RANGE: u16 = 264;
@@ -84,6 +87,7 @@ pub enum Message {
     OpenChannel(Box<OpenChannel>),
     FundingCreated(Box<FundingCreated>),
     ChannelAnnouncement(Box<ChannelAnnouncement>),
+    NodeAnnouncement(Box<NodeAnnouncement>),
     ChannelUpdate(Box<ChannelUpdate>),
     QueryChannelRange(QueryChannelRange),
     ReplyChannelRange(Box<ReplyChannelRange>),
@@ -107,6 +111,7 @@ impl Message {
             Self::OpenChannel(_) => msg_type::OPEN_CHANNEL,
             Self::FundingCreated(_) => msg_type::FUNDING_CREATED,
             Self::ChannelAnnouncement(_) => msg_type::CHANNEL_ANNOUNCEMENT,
+            Self::NodeAnnouncement(_) => msg_type::NODE_ANNOUNCEMENT,
             Self::ChannelUpdate(_) => msg_type::CHANNEL_UPDATE,
             Self::QueryChannelRange(_) => msg_type::QUERY_CHANNEL_RANGE,
             Self::ReplyChannelRange(_) => msg_type::REPLY_CHANNEL_RANGE,
@@ -128,6 +133,7 @@ impl Message {
             Self::OpenChannel(m) => out.extend(m.encode()),
             Self::FundingCreated(m) => out.extend(m.encode()),
             Self::ChannelAnnouncement(m) => out.extend(m.encode()),
+            Self::NodeAnnouncement(m) => out.extend(m.encode()),
             Self::ChannelUpdate(m) => out.extend(m.encode()),
             Self::QueryChannelRange(m) => out.extend(m.encode()),
             Self::ReplyChannelRange(m) => out.extend(m.encode()),
@@ -157,6 +163,9 @@ impl Message {
             ))),
             msg_type::CHANNEL_ANNOUNCEMENT => Ok(Self::ChannelAnnouncement(Box::new(
                 ChannelAnnouncement::decode(cursor)?,
+            ))),
+            msg_type::NODE_ANNOUNCEMENT => Ok(Self::NodeAnnouncement(Box::new(
+                NodeAnnouncement::decode(cursor)?,
             ))),
             msg_type::CHANNEL_UPDATE => Ok(Self::ChannelUpdate(Box::new(ChannelUpdate::decode(
                 cursor,

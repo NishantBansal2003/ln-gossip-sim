@@ -53,6 +53,11 @@ enum Command {
         /// Short channel ID as printed by send-channel-announcement (e.g. 539268x845x1)
         scid: String,
     },
+    /// Send a `node_announcement` to a connected peer
+    SendNodeAnnouncement {
+        /// Node public key (hex) of connected peer
+        pubkey: String,
+    },
     /// Stop the daemon
     Stop,
 }
@@ -74,6 +79,9 @@ fn main() {
         }
         Command::SendChannelUpdate { pubkey, scid } => {
             format!("sendchannelupdate {pubkey} {scid}")
+        }
+        Command::SendNodeAnnouncement { pubkey } => {
+            format!("sendnodeannouncement {pubkey}")
         }
         Command::Stop => "stop".to_string(),
     };
