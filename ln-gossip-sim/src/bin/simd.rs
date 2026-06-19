@@ -116,26 +116,31 @@ async fn handle_peer_message(
 }
 
 struct Peer {
-    #[allow(dead_code)] // Used when sending gossip/announcement messages.
     writer: Arc<Mutex<NoiseWriter>>,
     read_handle: tokio::task::JoinHandle<()>,
 }
 
+/// One simulated Lightning node hosted by the daemon. Its identity keys are
+/// derived on demand from its node index, so a node only needs to track the
+/// peers it has connected to.
+#[derive(Default)]
+struct Node {
+    peers: HashMap<PublicKey, Peer>,
+}
+
 struct Daemon {
-    node_id: PublicKey,
-    peers: Mutex<HashMap<PublicKey, Peer>>,
+    /// Nodes that are "up": a node appears here once it has at least one peer
+    /// connection, and is removed when its last peer disconnects.
+    nodes: Mutex<HashMap<u32, Node>>,
     bitcoind: Arc<BitcoindClient>,
     stop_tx: watch::Sender<bool>,
 }
 
 impl Daemon {
     fn new(bitcoind: Arc<BitcoindClient>) -> (Arc<Self>, watch::Receiver<bool>) {
-        let node_id = keys::node_id();
-        log::info!("Node ID: {node_id}");
         let (stop_tx, stop_rx) = watch::channel(false);
         let daemon = Arc::new(Self {
-            node_id,
-            peers: Mutex::new(HashMap::new()),
+            nodes: Mutex::new(HashMap::new()),
             bitcoind,
             stop_tx,
         });
@@ -147,29 +152,70 @@ impl Daemon {
         let _ = self.stop_tx.send(true);
     }
 
+    /// Looks up the writer for a connected peer of node `node_index`, returning
+    /// a user-facing error string if the node is not up or not connected to the
+    /// peer.
+    async fn peer_writer(
+        &self,
+        node_index: u32,
+        peer: &PublicKey,
+    ) -> Result<Arc<Mutex<NoiseWriter>>, String> {
+        let nodes = self.nodes.lock().await;
+        let Some(node) = nodes.get(&node_index) else {
+            return Err(format!(
+                "Node {node_index} is not up. Connect it to a peer first: \
+                 cli --node-index {node_index} connect <pubkey> <host:port>\n"
+            ));
+        };
+        let Some(peer) = node.peers.get(peer) else {
+            return Err(format!("Node {node_index} not connected to {peer}\n"));
+        };
+        Ok(Arc::clone(&peer.writer))
+    }
+
     async fn handle_command(self: &Arc<Self>, line: &str) -> String {
         let parts: Vec<&str> = line.split_whitespace().collect();
+        // `mine` and `stop` act on the daemon/chain as a whole, so they are not
+        // node-scoped and carry no node-index prefix.
         match parts.first().copied() {
-            Some("connect") => self.cmd_connect(&parts).await,
-            Some("disconnect") => self.cmd_disconnect(&parts).await,
-            Some("sendchannelannouncement") => self.cmd_send_channel_announcement(&parts).await,
-            Some("sendchannelannouncement2") => self.cmd_send_channel_announcement_2(&parts).await,
-            Some("sendchannelupdate") => self.cmd_send_channel_update(&parts).await,
-            Some("sendnodeannouncement") => self.cmd_send_node_announcement(&parts).await,
-            Some("sendmessage") => self.cmd_send_message(&parts).await,
-            Some("peers") => self.cmd_peers().await,
-            Some("info") => self.cmd_info().await,
-            Some("mine") => self.cmd_mine(&parts).await,
             Some("stop") => {
+                if parts.len() != 1 {
+                    return "Usage: stop\n".to_string();
+                }
                 self.shutdown();
-                "Stopping daemon\n".to_string()
+                return "Stopping daemon\n".to_string();
             }
+            Some("mine") => return self.cmd_mine(&parts).await,
+            _ => {}
+        }
+        // Every other command is prefixed by the node index it applies to.
+        let Some(idx_str) = parts.first().copied() else {
+            return String::new();
+        };
+        let Ok(node_index) = idx_str.parse::<u32>() else {
+            return format!("Invalid node index: {idx_str}\n");
+        };
+        let args = &parts[1..];
+        match args.first().copied() {
+            Some("connect") => self.cmd_connect(node_index, args).await,
+            Some("disconnect") => self.cmd_disconnect(node_index, args).await,
+            Some("sendchannelannouncement") => {
+                self.cmd_send_channel_announcement(node_index, args).await
+            }
+            Some("sendchannelannouncement2") => {
+                self.cmd_send_channel_announcement_2(node_index, args).await
+            }
+            Some("sendchannelupdate") => self.cmd_send_channel_update(node_index, args).await,
+            Some("sendnodeannouncement") => self.cmd_send_node_announcement(node_index, args).await,
+            Some("sendmessage") => self.cmd_send_message(node_index, args).await,
+            Some("peers") => self.cmd_peers(node_index, args).await,
+            Some("info") => self.cmd_info(node_index, args).await,
             Some(other) => format!("Unknown command: {other}\n"),
             None => String::new(),
         }
     }
 
-    async fn cmd_connect(self: &Arc<Self>, parts: &[&str]) -> String {
+    async fn cmd_connect(self: &Arc<Self>, node_index: u32, parts: &[&str]) -> String {
         if parts.len() != 3 {
             return "Usage: connect <pubkey_hex> <host:port>\n".to_string();
         }
@@ -183,8 +229,9 @@ impl Daemon {
             Ok(a) => a,
             Err(_) => return "Invalid address\n".to_string(),
         };
+        // Handshake with this node's own identity, derived from its index.
         let (writer, mut reader, _node_id) =
-            match conn::connect(addr, pubkey, keys::node_secret()).await {
+            match conn::connect(addr, pubkey, keys::node_secret(node_index)).await {
                 Ok(parts) => parts,
                 Err(e) => return format!("Connection failed: {e}\n"),
             };
@@ -223,21 +270,25 @@ impl Daemon {
                     }
                 }
             }
-            log::info!("Peer {peer_id} disconnected, removing from peer list");
-            daemon.peers.lock().await.remove(&peer_id);
+            log::info!("Peer {peer_id} disconnected from node {node_index}, removing");
+            let mut nodes = daemon.nodes.lock().await;
+            if let Some(node) = nodes.get_mut(&node_index) {
+                node.peers.remove(&peer_id);
+                if node.peers.is_empty() {
+                    nodes.remove(&node_index);
+                }
+            }
         });
-        let mut peers = self.peers.lock().await;
-        peers.insert(
-            pubkey,
-            Peer {
-                writer,
-                read_handle,
-            },
-        );
-        format!("Connected to {pubkey}\n")
+        let mut nodes = self.nodes.lock().await;
+        nodes
+            .entry(node_index)
+            .or_default()
+            .peers
+            .insert(pubkey, Peer { writer, read_handle });
+        format!("Node {node_index} ({}) connected to {pubkey}\n", keys::node_id(node_index))
     }
 
-    async fn cmd_disconnect(&self, parts: &[&str]) -> String {
+    async fn cmd_disconnect(&self, node_index: u32, parts: &[&str]) -> String {
         if parts.len() != 2 {
             return "Usage: disconnect <pubkey_hex>\n".to_string();
         }
@@ -247,17 +298,23 @@ impl Daemon {
         else {
             return "Invalid pubkey\n".to_string();
         };
-        let mut peers = self.peers.lock().await;
-        if let Some(peer) = peers.remove(&pubkey) {
+        let mut nodes = self.nodes.lock().await;
+        let Some(node) = nodes.get_mut(&node_index) else {
+            return format!("Node {node_index} is not up\n");
+        };
+        if let Some(peer) = node.peers.remove(&pubkey) {
             peer.read_handle.abort();
-            log::info!("Disconnected peer {pubkey}");
-            format!("Disconnected {pubkey}\n")
+            if node.peers.is_empty() {
+                nodes.remove(&node_index);
+            }
+            log::info!("Node {node_index} disconnected peer {pubkey}");
+            format!("Node {node_index} disconnected {pubkey}\n")
         } else {
-            format!("Not connected to {pubkey}\n")
+            format!("Node {node_index} not connected to {pubkey}\n")
         }
     }
 
-    async fn cmd_send_channel_announcement(&self, parts: &[&str]) -> String {
+    async fn cmd_send_channel_announcement(&self, node_index: u32, parts: &[&str]) -> String {
         if parts.len() != 2 {
             return "Usage: sendchannelannouncement <pubkey_hex>\n".to_string();
         }
@@ -268,13 +325,9 @@ impl Daemon {
             return "Invalid pubkey\n".to_string();
         };
 
-        // Check if peer is connected.
-        let writer = {
-            let peers = self.peers.lock().await;
-            let Some(peer) = peers.get(&peer_pubkey) else {
-                return format!("Not connected to {peer_pubkey}\n");
-            };
-            Arc::clone(&peer.writer)
+        let writer = match self.peer_writer(node_index, &peer_pubkey).await {
+            Ok(w) => w,
+            Err(e) => return e,
         };
 
         // Mine 6 blocks to a fresh 2-of-2 P2WSH funding address.
@@ -287,7 +340,7 @@ impl Daemon {
         };
 
         // Both node_id_1 and node_id_2 are ours (we own both sides).
-        let our_sk = keys::node_secret();
+        let our_sk = keys::node_secret(node_index);
         let (bitcoin_sk_1, bitcoin_sk_2) = (funding.sk1, funding.sk2);
 
         let ann = ChannelAnnouncement::new_signed(
@@ -306,7 +359,7 @@ impl Daemon {
         }
 
         log::info!(
-            "Sent channel_announcement scid={} to {peer_pubkey}",
+            "Node {node_index} sent channel_announcement scid={} to {peer_pubkey}",
             ann.scid_str()
         );
         format!(
@@ -315,7 +368,7 @@ impl Daemon {
         )
     }
 
-    async fn cmd_send_channel_announcement_2(&self, parts: &[&str]) -> String {
+    async fn cmd_send_channel_announcement_2(&self, node_index: u32, parts: &[&str]) -> String {
         if parts.len() != 2 {
             return "Usage: sendchannelannouncement2 <pubkey_hex>\n".to_string();
         }
@@ -326,13 +379,9 @@ impl Daemon {
             return "Invalid pubkey\n".to_string();
         };
 
-        // Check if peer is connected.
-        let writer = {
-            let peers = self.peers.lock().await;
-            let Some(peer) = peers.get(&peer_pubkey) else {
-                return format!("Not connected to {peer_pubkey}\n");
-            };
-            Arc::clone(&peer.writer)
+        let writer = match self.peer_writer(node_index, &peer_pubkey).await {
+            Ok(w) => w,
+            Err(e) => return e,
         };
 
         // Mine 6 blocks to a fresh 2-of-2 P2WSH funding address.
@@ -348,8 +397,8 @@ impl Daemon {
         // requires node_id_1 < node_id_2 lexicographically, so order the two
         // node secrets by their public keys.
         let secp = bitcoin::secp256k1::Secp256k1::signing_only();
-        let sk_a = keys::node_secret();
-        let sk_b = keys::node_secret_2();
+        let sk_a = keys::node_secret(node_index);
+        let sk_b = keys::node_secret_2(node_index);
         let (node_sk_1, node_sk_2) = if PublicKey::from_secret_key(&secp, &sk_a)
             < PublicKey::from_secret_key(&secp, &sk_b)
         {
@@ -375,7 +424,7 @@ impl Daemon {
         }
 
         log::info!(
-            "Sent channel_announcement (distinct node IDs) scid={} to {peer_pubkey}",
+            "Node {node_index} sent channel_announcement (distinct node IDs) scid={} to {peer_pubkey}",
             ann.scid_str()
         );
         format!(
@@ -384,7 +433,7 @@ impl Daemon {
         )
     }
 
-    async fn cmd_send_channel_update(&self, parts: &[&str]) -> String {
+    async fn cmd_send_channel_update(&self, node_index: u32, parts: &[&str]) -> String {
         if parts.len() != 3 {
             return "Usage: sendchannelupdate <pubkey_hex> <scid>\n".to_string();
         }
@@ -399,13 +448,9 @@ impl Daemon {
             return "Invalid scid (expected block x tx x output)\n".to_string();
         };
 
-        // Check if peer is connected.
-        let writer = {
-            let peers = self.peers.lock().await;
-            let Some(peer) = peers.get(&peer_pubkey) else {
-                return format!("Not connected to {peer_pubkey}\n");
-            };
-            Arc::clone(&peer.writer)
+        let writer = match self.peer_writer(node_index, &peer_pubkey).await {
+            Ok(w) => w,
+            Err(e) => return e,
         };
 
         // Update the channel announced by send-channel-announcement-2, which
@@ -413,8 +458,8 @@ impl Daemon {
         // channel_flags direction bit is 0, so this update belongs to node_id_1
         // and must be signed by that node's key.
         let secp = bitcoin::secp256k1::Secp256k1::signing_only();
-        let sk_a = keys::node_secret();
-        let sk_b = keys::node_secret_2();
+        let sk_a = keys::node_secret(node_index);
+        let sk_b = keys::node_secret_2(node_index);
         let node_sk_1 = if PublicKey::from_secret_key(&secp, &sk_a)
             < PublicKey::from_secret_key(&secp, &sk_b)
         {
@@ -448,7 +493,7 @@ impl Daemon {
         }
 
         log::info!(
-            "Sent channel_update scid={} to {peer_pubkey}",
+            "Node {node_index} sent channel_update scid={} to {peer_pubkey}",
             update.scid_str()
         );
         format!(
@@ -457,7 +502,7 @@ impl Daemon {
         )
     }
 
-    async fn cmd_send_node_announcement(&self, parts: &[&str]) -> String {
+    async fn cmd_send_node_announcement(&self, node_index: u32, parts: &[&str]) -> String {
         if parts.len() != 2 {
             return "Usage: sendnodeannouncement <pubkey_hex>\n".to_string();
         }
@@ -468,13 +513,9 @@ impl Daemon {
             return "Invalid pubkey\n".to_string();
         };
 
-        // Check if peer is connected.
-        let writer = {
-            let peers = self.peers.lock().await;
-            let Some(peer) = peers.get(&peer_pubkey) else {
-                return format!("Not connected to {peer_pubkey}\n");
-            };
-            Arc::clone(&peer.writer)
+        let writer = match self.peer_writer(node_index, &peer_pubkey).await {
+            Ok(w) => w,
+            Err(e) => return e,
         };
 
         // Announce node_id_1 from send-channel-announcement-2 (the lesser of the
@@ -482,8 +523,8 @@ impl Daemon {
         // appears in a previously announced channel, so this must match the key
         // used there.
         let secp = bitcoin::secp256k1::Secp256k1::signing_only();
-        let sk_a = keys::node_secret();
-        let sk_b = keys::node_secret_2();
+        let sk_a = keys::node_secret(node_index);
+        let sk_b = keys::node_secret_2(node_index);
         let node_sk_1 = if PublicKey::from_secret_key(&secp, &sk_a)
             < PublicKey::from_secret_key(&secp, &sk_b)
         {
@@ -500,7 +541,7 @@ impl Daemon {
         }
 
         log::info!(
-            "Sent node_announcement node_id={} to {peer_pubkey}",
+            "Node {node_index} sent node_announcement node_id={} to {peer_pubkey}",
             ann.node_id
         );
         format!(
@@ -513,7 +554,7 @@ impl Daemon {
     /// connected peer. The message is decoded (and thus validated) before being
     /// re-encoded and sent. Messages whose type has no codec are rejected with
     /// an "unknown message type" error so the caller knows to add one.
-    async fn cmd_send_message(&self, parts: &[&str]) -> String {
+    async fn cmd_send_message(&self, node_index: u32, parts: &[&str]) -> String {
         if parts.len() != 3 {
             return "Usage: sendmessage <pubkey_hex> <message_hex>\n".to_string();
         }
@@ -542,13 +583,9 @@ impl Daemon {
             Err(e) => return format!("Decode failed: {e}\n"),
         };
 
-        // Check the peer is connected, grabbing its writer.
-        let writer = {
-            let peers = self.peers.lock().await;
-            let Some(peer) = peers.get(&peer_pubkey) else {
-                return format!("Not connected to {peer_pubkey}\n");
-            };
-            Arc::clone(&peer.writer)
+        let writer = match self.peer_writer(node_index, &peer_pubkey).await {
+            Ok(w) => w,
+            Err(e) => return e,
         };
 
         if let Err(e) = writer.lock().await.send(&wire).await {
@@ -556,24 +593,30 @@ impl Daemon {
         }
 
         let msg_type = u16::from_be_bytes([wire[0], wire[1]]);
-        log::info!("Sent message type {msg_type} to {peer_pubkey}");
+        log::info!("Node {node_index} sent message type {msg_type} to {peer_pubkey}");
         format!("Sent message type {msg_type} to {peer_pubkey}\n")
     }
 
-    async fn cmd_peers(&self) -> String {
-        let peers = self.peers.lock().await;
-        if peers.is_empty() {
-            return "No connected peers\n".to_string();
+    async fn cmd_peers(&self, node_index: u32, parts: &[&str]) -> String {
+        if parts.len() != 1 {
+            return "Usage: peers\n".to_string();
         }
+        let nodes = self.nodes.lock().await;
+        let Some(node) = nodes.get(&node_index) else {
+            return format!("Node {node_index} is not up (no peers)\n");
+        };
         let mut out = String::new();
-        for pk in peers.keys() {
+        for pk in node.peers.keys() {
             use std::fmt::Write;
             let _ = writeln!(out, "{pk}");
         }
         out
     }
 
-    async fn cmd_info(&self) -> String {
+    async fn cmd_info(&self, node_index: u32, parts: &[&str]) -> String {
+        if parts.len() != 1 {
+            return "Usage: info\n".to_string();
+        }
         let btc = Arc::clone(&self.bitcoind);
         let Ok((blocks, hash, balance)) = tokio::task::spawn_blocking(move || {
             (btc.block_count(), btc.best_block_hash(), btc.balance())
@@ -582,18 +625,23 @@ impl Daemon {
         else {
             return "Failed to query bitcoind\n".to_string();
         };
-        let peers = self.peers.lock().await;
+        let nodes = self.nodes.lock().await;
+        let (up, peer_count) = match nodes.get(&node_index) {
+            Some(node) => (true, node.peers.len()),
+            None => (false, 0),
+        };
         format!(
-            "[LN] node={} peers={}\n[Bitcoin] chain=regtest blocks={blocks} best={hash} balance={balance}\n",
-            self.node_id,
-            peers.len()
+            "[LN] node_index={node_index} node={} up={up} peers={peer_count}\n[Bitcoin] chain=regtest blocks={blocks} best={hash} balance={balance}\n",
+            keys::node_id(node_index)
         )
     }
 
     async fn cmd_mine(&self, parts: &[&str]) -> String {
-        let blocks: usize = match parts.get(1).and_then(|s| s.parse().ok()) {
-            Some(n) => n,
-            None => return "Usage: mine <blocks>\n".to_string(),
+        if parts.len() != 2 {
+            return "Usage: mine <blocks>\n".to_string();
+        }
+        let Some(blocks) = parts[1].parse::<usize>().ok() else {
+            return "Usage: mine <blocks>\n".to_string();
         };
         let btc = Arc::clone(&self.bitcoind);
         tokio::task::spawn_blocking(move || btc.mine(blocks))
